@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model ApiKey {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  label         String?
+  speedMs       Int      @default(900)
+  dailyLimit    Int      @default(86000)
+  usedToday     Int      @default(0)
+  lastResetDate String?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+}
+
+model Batch {
+  id             String    @id @default(cuid())
+  name           String
+  totalContacts  Int       @default(0)
+  totalEmails    Int       @default(0)
+  verifiedEmails Int       @default(0)
+  skippedEmails  Int       @default(0)
+  status         String    @default("uploaded")
+  currentColumn  Int       @default(1)
+  createdAt      DateTime  @default(now())
+  contacts       Contact[]
+}
+
+model Contact {
+  id        String  @id @default(cuid())
+  firstName String
+  lastName  String
+  jobTitle  String?
+  company   String?
+  domain    String
+  headCount String?
+  industry  String?
+  location  String?
+
+  email1    String?
+  email2    String?
+  email3    String?
+  email4    String?
+  email5    String?
+  email6    String?
+
+  status1   String  @default("pending")
+  status2   String  @default("pending")
+  status3   String  @default("pending")
+  status4   String  @default("pending")
+  status5   String  @default("pending")
+  status6   String  @default("pending")
+
+  message1  String?
+  message2  String?
+  message3  String?
+  message4  String?
+  message5  String?
+  message6  String?
+
+  batchId   String
+  batch     Batch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+}
+
+model DomainCache {
+  domain    String   @id
+  status    String
+  updatedAt DateTime @updatedAt
+}
+
+model VerificationState {
+  id              String    @id @default("main")
+  isRunning       Boolean   @default(false)
+  currentBatchId  String?
+  currentColumn   Int       @default(1)
+  lastHeartbeat   DateTime?
+  startedAt       DateTime?
+}
