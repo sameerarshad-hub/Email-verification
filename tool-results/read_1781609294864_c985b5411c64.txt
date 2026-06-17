@@ -1,0 +1,829 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import React, { useState, useEffect, useCallback, useRef } from 'react';
+     4→     4→import {
+     5→     5→  Upload, Play, Square, Download, Key, Trash2, Plus, RefreshCw,
+     6→     6→  CheckCircle, XCircle, AlertCircle, HelpCircle, Zap, Clock,
+     7→     7→  FileSpreadsheet, Settings, Loader2, Shield, Activity, Timer,
+     8→     8→  RotateCcw
+     9→     9→} from 'lucide-react';
+    10→    10→import { Button } from '@/components/ui/button';
+    11→    11→import { Input } from '@/components/ui/input';
+    12→    12→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+    13→    13→import { Badge } from '@/components/ui/badge';
+    14→    14→import { Progress } from '@/components/ui/progress';
+    15→    15→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    16→    16→import {
+    17→    17→  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+    18→    18→} from '@/components/ui/dialog';
+    19→    19→import {
+    20→    20→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    21→    21→} from '@/components/ui/table';
+    22→    22→import {
+    23→    23→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    24→    24→} from '@/components/ui/select';
+    25→    25→import { Switch } from '@/components/ui/switch';
+    26→    26→import { Label } from '@/components/ui/label';
+    27→    27→import { useToast } from '@/hooks/use-toast';
+    28→    28→
+    29→    29→// ============ Types ============
+    30→    30→interface BatchInfo {
+    31→    31→  id: string;
+    32→    32→  name: string;
+    33→    33→  totalContacts: number;
+    34→    34→  totalEmails: number;
+    35→    35→  verifiedEmails: number;
+    36→    36→  skippedEmails: number;
+    37→    37→  status: string;
+    38→    38→  currentColumn: number;
+    39→    39→  createdAt: string;
+    40→    40→  _count?: { contacts: number };
+    41→    41→}
+    42→    42→
+    43→    43→interface ApiKeyInfo {
+    44→    44→  id: string;
+    45→    45→  key: string;
+    46→    46→  label: string | null;
+    47→    47→  speedMs: number;
+    48→    48→  dailyLimit: number;
+    49→    49→  usedToday: number;
+    50→    50→  lastResetDate: string | null;
+    51→    51→  active: boolean;
+    52→    52→  fullKeyLength: number;
+    53→    53→}
+    54→    54→
+    55→    55→interface VerificationStatus {
+    56→    56→  isRunning: boolean;
+    57→    57→  currentBatchId: string | null;
+    58→    58→  currentColumn: number;
+    59→    59→  stats: { verifiedThisRun: number; skippedThisRun: number; errorsThisRun: number; startTime: number };
+    60→    60→  batchProgress: {
+    61→    61→    totalContacts: number;
+    62→    62→    totalEmails: number;
+    63→    63→    verifiedEmails: number;
+    64→    64→    skippedEmails: number;
+    65→    65→    currentColumn: number;
+    66→    66→    status: string;
+    67→    67→  } | null;
+    68→    68→  keys: {
+    69→    69→    total: number;
+    70→    70→    usedToday: number;
+    71→    71→    remainingToday: number;
+    72→    72→    effectivePerSecond: number;
+    73→    73→    effectivePerDay: number;
+    74→    74→  };
+    75→    75→  totalPending?: number;
+    76→    76→}
+    77→    77→
+    78→    78→interface ContactInfo {
+    79→    79→  id: string;
+    80→    80→  firstName: string;
+    81→    81→  lastName: string;
+    82→    82→  jobTitle: string | null;
+    83→    83→  company: string | null;
+    84→    84→  domain: string;
+    85→    85→  headCount: string | null;
+    86→    86→  industry: string | null;
+    87→    87→  location: string | null;
+    88→    88→  email1: string | null;
+    89→    89→  email2: string | null;
+    90→    90→  email3: string | null;
+    91→    91→  email4: string | null;
+    92→    92→  email5: string | null;
+    93→    93→  email6: string | null;
+    94→    94→  status1: string;
+    95→    95→  status2: string;
+    96→    96→  status3: string;
+    97→    97→  status4: string;
+    98→    98→  status5: string;
+    99→    99→  status6: string;
+   100→   100→}
+   101→   101→
+   102→   102→// ============ Status Badge ============
+   103→   103→function StatusBadge({ status }: { status: string }) {
+   104→   104→  if (status.startsWith('skipped')) {
+   105→   105→    const reason = status.replace('skipped-', '');
+   106→   106→    return (
+   107→   107→      <Badge variant="outline" className="bg-gray-50 text-gray-500 border-gray-200 text-[10px] gap-0.5 px-1.5 py-0">
+   108→   108→        <Clock className="w-2.5 h-2.5" />
+   109→   109→        Skip{reason ? ` (${reason})` : ''}
+   110→   110→      </Badge>
+   111→   111→    );
+   112→   112→  }
+   113→   113→
+   114→   114→  const config: Record<string, { icon: React.ReactNode; cls: string; label: string }> = {
+   115→   115→    pending: { icon: <Clock className="w-2.5 h-2.5" />, cls: 'bg-gray-50 text-gray-500 border-gray-200', label: 'Pending' },
+   116→   116→    valid: { icon: <CheckCircle className="w-2.5 h-2.5" />, cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'Valid' },
+   117→   117→    invalid: { icon: <XCircle className="w-2.5 h-2.5" />, cls: 'bg-red-50 text-red-700 border-red-200', label: 'Invalid' },
+   118→   118→    unverifiable: { icon: <HelpCircle className="w-2.5 h-2.5" />, cls: 'bg-amber-50 text-amber-700 border-amber-200', label: 'Unverifiable' },
+   119→   119→    'catch-all': { icon: <Shield className="w-2.5 h-2.5" />, cls: 'bg-orange-50 text-orange-700 border-orange-200', label: 'Catch-All' },
+   120→   120→    'no-mx': { icon: <AlertCircle className="w-2.5 h-2.5" />, cls: 'bg-purple-50 text-purple-700 border-purple-200', label: 'No MX' },
+   121→   121→    error: { icon: <AlertCircle className="w-2.5 h-2.5" />, cls: 'bg-red-50 text-red-600 border-red-200', label: 'Error' },
+   122→   122→  };
+   123→   123→
+   124→   124→  const c = config[status] || config.pending;
+   125→   125→  return (
+   126→   126→    <Badge variant="outline" className={`${c.cls} text-[10px] gap-0.5 px-1.5 py-0`}>
+   127→   127→      {c.icon}
+   128→   128→      {c.label}
+   129→   129→    </Badge>
+   130→   130→  );
+   131→   131→}
+   132→   132→
+   133→   133→// ============ Column Names ============
+   134→   134→const EMAIL_LABELS = [
+   135→   135→  'firstname.lastname',
+   136→   136→  'firstname',
+   137→   137→  'lastname',
+   138→   138→  'firstname.l',
+   139→   139→  'f.lastname',
+   140→   140→  'firstnamelastname',
+   141→   141→];
+   142→   142→
+   143→   143→const COL_LETTERS = ['I', 'K', 'M', 'O', 'Q', 'S'];
+   144→   144→const STATUS_LETTERS = ['J', 'L', 'N', 'P', 'R', 'T'];
+   145→   145→
+   146→   146→// ============ Main Page ============
+   147→   147→export default function HomePage() {
+   148→   148→  const { toast } = useToast();
+   149→   149→  const [batches, setBatches] = useState<BatchInfo[]>([]);
+   150→   150→  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+   151→   151→  const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
+   152→   152→  const [verifyStatus, setVerifyStatus] = useState<VerificationStatus | null>(null);
+   153→   153→  const [contacts, setContacts] = useState<ContactInfo[]>([]);
+   154→   154→  const [contactsPage, setContactsPage] = useState(1);
+   155→   155→  const [contactsTotal, setContactsTotal] = useState(0);
+   156→   156→  const [uploading, setUploading] = useState(false);
+   157→   157→  const [starting, setStarting] = useState(false);
+   158→   158→  const [stopping, setStopping] = useState(false);
+   159→   159→  const [autoTriggerOn, setAutoTriggerOn] = useState(true);
+   160→   160→
+   161→   161→  // Add key dialog
+   162→   162→  const [newKey, setNewKey] = useState('');
+   163→   163→  const [newKeyLabel, setNewKeyLabel] = useState('');
+   164→   164→  const [newKeySpeed, setNewKeySpeed] = useState(900);
+   165→   165→  const [newKeyLimit, setNewKeyLimit] = useState(86000);
+   166→   166→  const [addKeyOpen, setAddKeyOpen] = useState(false);
+   167→   167→
+   168→   168→  const fileInputRef = useRef<HTMLInputElement>(null);
+   169→   169→  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+   170→   170→  const autoTriggerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+   171→   171→
+   172→   172→  // Fetch helpers
+   173→   173→  // Refs for values used in intervals
+   174→   174→  const selectedBatchRef = useRef(selectedBatchId);
+   175→   175→  useEffect(() => { selectedBatchRef.current = selectedBatchId; }, [selectedBatchId]);
+   176→   176→
+   177→   177→  // Data fetching helpers (use .then() to avoid synchronous setState in effects)
+   178→   178→  const loadBatches = useCallback(() => {
+   179→   179→    fetch('/api/batches').then(r => r.json()).then(data => {
+   180→   180→      if (data.batches) {
+   181→   181→        setBatches(data.batches);
+   182→   182→        if (!selectedBatchRef.current && data.batches.length > 0) {
+   183→   183→          setSelectedBatchId(data.batches[0].id);
+   184→   184→        }
+   185→   185→      }
+   186→   186→    }).catch(() => {});
+   187→   187→  }, []);
+   188→   188→
+   189→   189→  const loadKeys = useCallback(() => {
+   190→   190→    fetch('/api/keys').then(r => r.json()).then(data => {
+   191→   191→      if (data.keys) setApiKeys(data.keys);
+   192→   192→    }).catch(() => {});
+   193→   193→  }, []);
+   194→   194→
+   195→   195→  const loadStatus = useCallback(() => {
+   196→   196→    fetch('/api/verify').then(r => r.json()).then(data => {
+   197→   197→      setVerifyStatus(data);
+   198→   198→    }).catch(() => {});
+   199→   199→  }, []);
+   200→   200→
+   201→   201→  const loadContacts = useCallback(() => {
+   202→   202→    const bid = selectedBatchRef.current;
+   203→   203→    if (!bid) return;
+   204→   204→    fetch(`/api/contacts?batchId=${bid}&page=${contactsPage}&limit=50`)
+   205→   205→      .then(r => r.json())
+   206→   206→      .then(data => {
+   207→   207→        if (data.contacts) {
+   208→   208→          setContacts(data.contacts);
+   209→   209→          setContactsTotal(data.total);
+   210→   210→        }
+   211→   211→      }).catch(() => {});
+   212→   212→  }, [contactsPage]);
+   213→   213→
+   214→   214→  // Initial load
+   215→   215→  useEffect(() => {
+   216→   216→    loadBatches();
+   217→   217→    loadKeys();
+   218→   218→    loadStatus();
+   219→   219→  }, [loadBatches, loadKeys, loadStatus]);
+   220→   220→
+   221→   221→  useEffect(() => {
+   222→   222→    loadContacts();
+   223→   223→  }, [loadContacts]);
+   224→   224→
+   225→   225→  // Auto-poll when verifying (3 sec)
+   226→   226→  useEffect(() => {
+   227→   227→    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+   228→   228→    if (verifyStatus?.isRunning) {
+   229→   229→      pollRef.current = setInterval(() => {
+   230→   230→        loadStatus();
+   231→   231→        if (selectedBatchRef.current) loadContacts();
+   232→   232→      }, 3000);
+   233→   233→    }
+   234→   234→    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+   235→   235→  }, [verifyStatus?.isRunning, loadStatus, loadContacts]);
+   236→   236→
+   237→   237→  // Auto-refresh batches (10 sec)
+   238→   238→  useEffect(() => {
+   239→   239→    const iv = setInterval(loadBatches, 10000);
+   240→   240→    return () => clearInterval(iv);
+   241→   241→  }, [loadBatches]);
+   242→   242→
+   243→   243→  // 5-minute auto-trigger
+   244→   244→  useEffect(() => {
+   245→   245→    if (autoTriggerRef.current) { clearInterval(autoTriggerRef.current); autoTriggerRef.current = null; }
+   246→   246→    if (autoTriggerOn) {
+   247→   247→      autoTriggerRef.current = setInterval(async () => {
+   248→   248→        try {
+   249→   249→          const res = await fetch('/api/auto-trigger');
+   250→   250→          const data = await res.json();
+   251→   251→          if (data.triggered) {
+   252→   252→            toast({ title: 'Auto-trigger started', description: data.reason });
+   253→   253→            loadStatus();
+   254→   254→          }
+   255→   255→        } catch {}
+   256→   256→      }, 5 * 60 * 1000); // 5 minutes
+   257→   257→    }
+   258→   258→    return () => { if (autoTriggerRef.current) clearInterval(autoTriggerRef.current); };
+   259→   259→  }, [autoTriggerOn, loadStatus, toast]);
+   260→   260→
+   261→   261→  // Also trigger auto-start immediately when enabled
+   262→   262→  useEffect(() => {
+   263→   263→    if (autoTriggerOn && !verifyStatus?.isRunning) {
+   264→   264→      fetch('/api/auto-trigger').then(res => res.json()).then(data => {
+   265→   265→        if (data.triggered) {
+   266→   266→          toast({ title: 'Auto-trigger', description: data.reason });
+   267→   267→          loadStatus();
+   268→   268→        }
+   269→   269→      }).catch(() => {});
+   270→   270→    }
+   271→   271→  }, [autoTriggerOn]);
+   272→   272→
+   273→   273→  // Upload CSV
+   274→   274→  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+   275→   275→    const file = e.target.files?.[0];
+   276→   276→    if (!file) return;
+   277→   277→    setUploading(true);
+   278→   278→    try {
+   279→   279→      const formData = new FormData();
+   280→   280→      formData.append('file', file);
+   281→   281→      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+   282→   282→      const data = await res.json();
+   283→   283→      if (data.success) {
+   284→   284→        toast({ title: 'Upload successful', description: `${data.batch.totalContacts} contacts, ${data.batch.totalEmails} emails generated.` });
+   285→   285→        setSelectedBatchId(data.batch.id);
+   286→   286→        await loadBatches();
+   287→   287→        await loadContacts();
+   288→   288→      } else {
+   289→   289→        toast({ title: 'Upload failed', description: data.error, variant: 'destructive' });
+   290→   290→      }
+   291→   291→    } catch (err: any) {
+   292→   292→      toast({ title: 'Upload error', description: err.message, variant: 'destructive' });
+   293→   293→    }
+   294→   294→    setUploading(false);
+   295→   295→    if (fileInputRef.current) fileInputRef.current.value = '';
+   296→   296→  };
+   297→   297→
+   298→   298→  // Start
+   299→   299→  const handleStart = async () => {
+   300→   300→    if (!selectedBatchId) {
+   301→   301→      toast({ title: 'No batch selected', description: 'Upload a CSV first.', variant: 'destructive' });
+   302→   302→      return;
+   303→   303→    }
+   304→   304→    setStarting(true);
+   305→   305→    try {
+   306→   306→      const res = await fetch('/api/verify', {
+   307→   307→        method: 'POST',
+   308→   308→        headers: { 'Content-Type': 'application/json' },
+   309→   309→        body: JSON.stringify({ action: 'start', batchId: selectedBatchId }),
+   310→   310→      });
+   311→   311→      const data = await res.json();
+   312→   312→      if (data.success) {
+   313→   313→        toast({ title: 'Verification started' });
+   314→   314→        await loadStatus();
+   315→   315→      } else {
+   316→   316→        toast({ title: 'Cannot start', description: data.message, variant: 'destructive' });
+   317→   317→      }
+   318→   318→    } catch (err: any) {
+   319→   319→      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+   320→   320→    }
+   321→   321→    setStarting(false);
+   322→   322→  };
+   323→   323→
+   324→   324→  // Stop
+   325→   325→  const handleStop = async () => {
+   326→   326→    setStopping(true);
+   327→   327→    try {
+   328→   328→      const res = await fetch('/api/verify', {
+   329→   329→        method: 'POST',
+   330→   330→        headers: { 'Content-Type': 'application/json' },
+   331→   331→        body: JSON.stringify({ action: 'stop' }),
+   332→   332→      });
+   333→   333→      const data = await res.json();
+   334→   334→      if (data.success) {
+   335→   335→        toast({ title: 'Verification stopped' });
+   336→   336→        await loadStatus();
+   337→   337→      }
+   338→   338→    } catch (err: any) {
+   339→   339→      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+   340→   340→    }
+   341→   341→    setStopping(false);
+   342→   342→  };
+   343→   343→
+   344→   344→  // Add key
+   345→   345→  const handleAddKey = async () => {
+   346→   346→    if (!newKey.trim()) return;
+   347→   347→    try {
+   348→   348→      const res = await fetch('/api/keys', {
+   349→   349→        method: 'POST',
+   350→   350→        headers: { 'Content-Type': 'application/json' },
+   351→   351→        body: JSON.stringify({ key: newKey.trim(), label: newKeyLabel.trim(), speedMs: newKeySpeed, dailyLimit: newKeyLimit }),
+   352→   352→      });
+   353→   353→      const data = await res.json();
+   354→   354→      if (data.success) {
+   355→   355→        toast({ title: 'API key added' });
+   356→   356→        setNewKey(''); setNewKeyLabel(''); setNewKeySpeed(900); setNewKeyLimit(86000);
+   357→   357→        setAddKeyOpen(false);
+   358→   358→        await loadKeys(); await loadStatus();
+   359→   359→      } else {
+   360→   360→        toast({ title: 'Error', description: data.error, variant: 'destructive' });
+   361→   361→      }
+   362→   362→    } catch (err: any) {
+   363→   363→      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+   364→   364→    }
+   365→   365→  };
+   366→   366→
+   367→   367→  // Delete key
+   368→   368→  const handleDeleteKey = async (id: string) => {
+   369→   369→    try {
+   370→   370→      await fetch(`/api/keys?id=${id}`, { method: 'DELETE' });
+   371→   371→      toast({ title: 'Key removed' });
+   372→   372→      await loadKeys(); await loadStatus();
+   373→   373→    } catch {}
+   374→   374→  };
+   375→   375→
+   376→   376→  // Toggle key
+   377→   377→  const handleToggleKey = async (id: string, active: boolean) => {
+   378→   378→    try {
+   379→   379→      await fetch('/api/keys', {
+   380→   380→        method: 'PUT',
+   381→   381→        headers: { 'Content-Type': 'application/json' },
+   382→   382→        body: JSON.stringify({ id, active }),
+   383→   383→      });
+   384→   384→      await loadKeys(); await loadStatus();
+   385→   385→    } catch {}
+   386→   386→  };
+   387→   387→
+   388→   388→  // Delete batch
+   389→   389→  const handleDeleteBatch = async (id: string) => {
+   390→   390→    try {
+   391→   391→      await fetch(`/api/batches?id=${id}`, { method: 'DELETE' });
+   392→   392→      if (selectedBatchId === id) setSelectedBatchId(null);
+   393→   393→      await loadBatches();
+   394→   394→    } catch {}
+   395→   395→  };
+   396→   396→
+   397→   397→  // Download
+   398→   398→  const handleDownload = (batchId: string) => {
+   399→   399→    window.open(`/api/download/${batchId}`, '_blank');
+   400→   400→  };
+   401→   401→
+   402→   402→  // Selected batch
+   403→   403→  const selectedBatch = batches.find(b => b.id === selectedBatchId);
+   404→   404→
+   405→   405→  // Progress
+   406→   406→  const totalProcessed = (verifyStatus?.batchProgress?.verifiedEmails || 0) + (verifyStatus?.batchProgress?.skippedEmails || 0);
+   407→   407→  const totalEmails = verifyStatus?.batchProgress?.totalEmails || selectedBatch?.totalEmails || 0;
+   408→   408→  const progressPct = totalEmails > 0 ? Math.round((totalProcessed / totalEmails) * 100) : 0;
+   409→   409→  const curColLabel = verifyStatus?.currentColumn ? EMAIL_LABELS[verifyStatus.currentColumn - 1] : '';
+   410→   410→
+   411→   411→  return (
+   412→   412→    <div className="min-h-screen bg-slate-50 flex flex-col">
+   413→   413→      {/* Header */}
+   414→   414→      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+   415→   415→        <div className="max-w-[1700px] mx-auto px-4 py-2.5 flex items-center justify-between">
+   416→   416→          <div className="flex items-center gap-2.5">
+   417→   417→            <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center shadow-sm">
+   418→   418→              <Zap className="w-4 h-4 text-white" />
+   419→   419→            </div>
+   420→   420→            <div>
+   421→   421→              <h1 className="text-base font-bold text-slate-900 leading-tight">MailTester Ninja</h1>
+   422→   422→              <p className="text-[10px] text-slate-500">Email Verification Engine</p>
+   423→   423→            </div>
+   424→   424→          </div>
+   425→   425→          <div className="flex items-center gap-4">
+   426→   426→            {verifyStatus?.isRunning && (
+   427→   427→              <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">
+   428→   428→                <span className="relative flex h-2 w-2">
+   429→   429→                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+   430→   430→                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+   431→   431→                </span>
+   432→   432→                <span className="text-[11px] font-medium text-emerald-700">
+   433→   433→                  Verifying Col {COL_LETTERS[verifyStatus.currentColumn - 1]} ({curColLabel})
+   434→   434→                </span>
+   435→   435→              </div>
+   436→   436→            )}
+   437→   437→            <div className="text-[11px] text-slate-500 flex items-center gap-1">
+   438→   438→              <Zap className="w-3 h-3" />
+   439→   439→              {(verifyStatus?.keys?.effectivePerDay || 0).toLocaleString()}/day
+   440→   440→              {verifyStatus?.keys?.total ? ` · ${verifyStatus.keys.total} key${verifyStatus.keys.total > 1 ? 's' : ''}` : ''}
+   441→   441→            </div>
+   442→   442→            {/* Auto-trigger toggle */}
+   443→   443→            <div className="flex items-center gap-1.5 bg-slate-100 rounded-full px-2.5 py-1">
+   444→   444→              <Timer className="w-3 h-3 text-slate-500" />
+   445→   445→              <span className="text-[10px] text-slate-600">5m auto</span>
+   446→   446→              <Switch checked={autoTriggerOn} onCheckedChange={setAutoTriggerOn} className="scale-75" />
+   447→   447→            </div>
+   448→   448→          </div>
+   449→   449→        </div>
+   450→   450→      </header>
+   451→   451→
+   452→   452→      {/* Main */}
+   453→   453→      <main className="flex-1 max-w-[1700px] mx-auto w-full px-4 py-3 space-y-3">
+   454→   454→        <Tabs defaultValue="dashboard" className="w-full">
+   455→   455→          <TabsList className="bg-white border h-9">
+   456→   456→            <TabsTrigger value="dashboard" className="gap-1 text-xs px-3">
+   457→   457→              <Activity className="w-3.5 h-3.5" /> Dashboard
+   458→   458→            </TabsTrigger>
+   459→   459→            <TabsTrigger value="spreadsheet" className="gap-1 text-xs px-3">
+   460→   460→              <FileSpreadsheet className="w-3.5 h-3.5" /> Spreadsheet
+   461→   461→            </TabsTrigger>
+   462→   462→            <TabsTrigger value="keys" className="gap-1 text-xs px-3">
+   463→   463→              <Key className="w-3.5 h-3.5" /> API Keys
+   464→   464→            </TabsTrigger>
+   465→   465→          </TabsList>
+   466→   466→
+   467→   467→          {/* ===== Dashboard ===== */}
+   468→   468→          <TabsContent value="dashboard" className="space-y-3 mt-3">
+   469→   469→            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+   470→   470→              {/* Upload */}
+   471→   471→              <Card>
+   472→   472→                <CardHeader className="pb-2 pt-3 px-4">
+   473→   473→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   474→   474→                    <Upload className="w-3.5 h-3.5" /> Upload CSV
+   475→   475→                  </CardTitle>
+   476→   476→                </CardHeader>
+   477→   477→                <CardContent className="px-4 pb-3">
+   478→   478→                  <input type="file" accept=".csv,.txt" onChange={handleUpload} ref={fileInputRef} className="hidden" />
+   479→   479→                  <Button
+   480→   480→                    variant="outline"
+   481→   481→                    className="w-full h-16 border-dashed border-2 hover:border-emerald-400 hover:bg-emerald-50/50 text-xs"
+   482→   482→                    onClick={() => fileInputRef.current?.click()}
+   483→   483→                    disabled={uploading}
+   484→   484→                  >
+   485→   485→                    {uploading ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Upload className="w-4 h-4 mr-1.5 text-slate-400" />}
+   486→   486→                    {uploading ? 'Processing...' : 'Click to upload CSV'}
+   487→   487→                  </Button>
+   488→   488→                  <p className="text-[10px] text-slate-400 mt-1.5">
+   489→   489→                    Columns: First Name, Last Name, Website/Domain (required) + Job Title, Company, Head Count, Industry, Location
+   490→   490→                  </p>
+   491→   491→                </CardContent>
+   492→   492→              </Card>
+   493→   493→
+   494→   494→              {/* Controls */}
+   495→   495→              <Card>
+   496→   496→                <CardHeader className="pb-2 pt-3 px-4">
+   497→   497→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   498→   498→                    <Settings className="w-3.5 h-3.5" /> Controls
+   499→   499→                  </CardTitle>
+   500→   500→                </CardHeader>
+   501→   501→                <CardContent className="px-4 pb-3 space-y-2">
+   502→   502→                  <Select value={selectedBatchId || ''} onValueChange={setSelectedBatchId}>
+   503→   503→                    <SelectTrigger className="h-8 text-xs">
+   504→   504→                      <SelectValue placeholder="Select batch..." />
+   505→   505→                    </SelectTrigger>
+   506→   506→                    <SelectContent>
+   507→   507→                      {batches.map(b => (
+   508→   508→                        <SelectItem key={b.id} value={b.id}>
+   509→   509→                          {b.name} ({b._count?.contacts || b.totalContacts} contacts)
+   510→   510→                        </SelectItem>
+   511→   511→                      ))}
+   512→   512→                    </SelectContent>
+   513→   513→                  </Select>
+   514→   514→                  <div className="flex gap-1.5">
+   515→   515→                    <Button
+   516→   516→                      size="sm"
+   517→   517→                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 gap-1 h-8 text-xs"
+   518→   518→                      onClick={handleStart}
+   519→   519→                      disabled={starting || !selectedBatchId || verifyStatus?.isRunning}
+   520→   520→                    >
+   521→   521→                      {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+   522→   522→                      {starting ? 'Starting...' : 'Start'}
+   523→   523→                    </Button>
+   524→   524→                    <Button
+   525→   525→                      size="sm"
+   526→   526→                      variant="destructive"
+   527→   527→                      className="flex-1 gap-1 h-8 text-xs"
+   528→   528→                      onClick={handleStop}
+   529→   529→                      disabled={stopping || !verifyStatus?.isRunning}
+   530→   530→                    >
+   531→   531→                      {stopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5" />}
+   532→   532→                      Stop
+   533→   533→                    </Button>
+   534→   534→                    {selectedBatchId && (
+   535→   535→                      <Button size="sm" variant="outline" className="h-8 w-8 p-0" onClick={() => handleDownload(selectedBatchId)}>
+   536→   536→                        <Download className="w-3.5 h-3.5" />
+   537→   537→                      </Button>
+   538→   538→                    )}
+   539→   539→                  </div>
+   540→   540→                </CardContent>
+   541→   541→              </Card>
+   542→   542→
+   543→   543→              {/* Stats */}
+   544→   544→              <Card>
+   545→   545→                <CardHeader className="pb-2 pt-3 px-4">
+   546→   546→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   547→   547→                    <Activity className="w-3.5 h-3.5" /> Progress
+   548→   548→                  </CardTitle>
+   549→   549→                </CardHeader>
+   550→   550→                <CardContent className="px-4 pb-3">
+   551→   551→                  <div className="mb-2">
+   552→   552→                    <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+   553→   553→                      <span>{totalProcessed.toLocaleString()} / {totalEmails.toLocaleString()}</span>
+   554→   554→                      <span>{progressPct}%</span>
+   555→   555→                    </div>
+   556→   556→                    <Progress value={progressPct} className="h-2" />
+   557→   557→                  </div>
+   558→   558→                  <div className="grid grid-cols-3 gap-1.5 text-center">
+   559→   559→                    <div className="bg-emerald-50 rounded p-1.5">
+   560→   560→                      <div className="text-sm font-bold text-emerald-700">{(verifyStatus?.batchProgress?.verifiedEmails || 0).toLocaleString()}</div>
+   561→   561→                      <div className="text-[9px] text-emerald-600">Verified</div>
+   562→   562→                    </div>
+   563→   563→                    <div className="bg-slate-100 rounded p-1.5">
+   564→   564→                      <div className="text-sm font-bold text-slate-600">{(verifyStatus?.batchProgress?.skippedEmails || 0).toLocaleString()}</div>
+   565→   565→                      <div className="text-[9px] text-slate-500">Skipped</div>
+   566→   566→                    </div>
+   567→   567→                    <div className="bg-blue-50 rounded p-1.5">
+   568→   568→                      <div className="text-sm font-bold text-blue-700">{(verifyStatus?.keys?.usedToday || 0).toLocaleString()}</div>
+   569→   569→                      <div className="text-[9px] text-blue-600">API Today</div>
+   570→   570→                    </div>
+   571→   571→                  </div>
+   572→   572→                  {(verifyStatus?.totalPending || 0) > 0 && (
+   573→   573→                    <div className="mt-1.5 text-[10px] text-slate-500 text-center">
+   574→   574→                      {(verifyStatus?.totalPending || 0).toLocaleString()} emails pending across all batches
+   575→   575→                    </div>
+   576→   576→                  )}
+   577→   577→                </CardContent>
+   578→   578→              </Card>
+   579→   579→            </div>
+   580→   580→
+   581→   581→            {/* Batch list */}
+   582→   582→            {batches.length > 0 && (
+   583→   583→              <Card>
+   584→   584→                <CardHeader className="pb-2 pt-3 px-4">
+   585→   585→                  <CardTitle className="text-xs font-semibold">Batches</CardTitle>
+   586→   586→                </CardHeader>
+   587→   587→                <CardContent className="px-4 pb-3">
+   588→   588→                  <div className="space-y-1.5 max-h-60 overflow-y-auto">
+   589→   589→                    {batches.map(b => (
+   590→   590→                      <div
+   591→   591→                        key={b.id}
+   592→   592→                        className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-colors ${
+   593→   593→                          selectedBatchId === b.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-white hover:bg-slate-50'
+   594→   594→                        }`}
+   595→   595→                        onClick={() => setSelectedBatchId(b.id)}
+   596→   596→                      >
+   597→   597→                        <div className="flex-1 min-w-0">
+   598→   598→                          <div className="font-medium truncate">{b.name}</div>
+   599→   599→                          <div className="text-slate-400">
+   600→   600→                            {b._count?.contacts || b.totalContacts} contacts · {b.totalEmails} emails · Col {COL_LETTERS[b.currentColumn - 1]}
+   601→   601→                          </div>
+   602→   602→                        </div>
+   603→   603→                        <div className="flex items-center gap-1.5 ml-2">
+   604→   604→                          <Badge variant="outline" className={
+   605→   605→                            b.status === 'completed' ? 'bg-emerald-50 text-emerald-700 text-[10px]' :
+   606→   606→                            b.status === 'verifying' ? 'bg-blue-50 text-blue-700 text-[10px]' :
+   607→   607→                            b.status === 'paused' ? 'bg-amber-50 text-amber-700 text-[10px]' :
+   608→   608→                            'bg-slate-50 text-slate-600 text-[10px]'
+   609→   609→                          }>
+   610→   610→                            {b.status}
+   611→   611→                          </Badge>
+   612→   612→                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={(e) => { e.stopPropagation(); handleDeleteBatch(b.id); }}>
+   613→   613→                            <Trash2 className="w-3 h-3 text-slate-400" />
+   614→   614→                          </Button>
+   615→   615→                        </div>
+   616→   616→                      </div>
+   617→   617→                    ))}
+   618→   618→                  </div>
+   619→   619→                </CardContent>
+   620→   620→              </Card>
+   621→   621→            )}
+   622→   622→          </TabsContent>
+   623→   623→
+   624→   624→          {/* ===== Spreadsheet ===== */}
+   625→   625→          <TabsContent value="spreadsheet" className="mt-3">
+   626→   626→            <Card>
+   627→   627→              <CardHeader className="pb-2 pt-3 px-4">
+   628→   628→                <div className="flex items-center justify-between">
+   629→   629→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   630→   630→                    <FileSpreadsheet className="w-3.5 h-3.5" /> Spreadsheet
+   631→   631→                  </CardTitle>
+   632→   632→                  <div className="flex items-center gap-1.5">
+   633→   633→                    {selectedBatchId && (
+   634→   634→                      <Button variant="outline" size="sm" className="h-7 text-[11px] gap-1" onClick={() => handleDownload(selectedBatchId)}>
+   635→   635→                        <Download className="w-3 h-3" /> Export CSV
+   636→   636→                      </Button>
+   637→   637→                    )}
+   638→   638→                    <Button variant="outline" size="sm" className="h-7 text-[11px] gap-1" onClick={loadContacts}>
+   639→   639→                      <RefreshCw className="w-3 h-3" /> Refresh
+   640→   640→                    </Button>
+   641→   641→                  </div>
+   642→   642→                </div>
+   643→   643→              </CardHeader>
+   644→   644→              <CardContent className="px-2 pb-3">
+   645→   645→                {!selectedBatchId ? (
+   646→   646→                  <div className="text-center py-10 text-slate-400">
+   647→   647→                    <FileSpreadsheet className="w-10 h-10 mx-auto mb-2 opacity-30" />
+   648→   648→                    <p className="text-xs">Upload a CSV to see the spreadsheet</p>
+   649→   649→                  </div>
+   650→   650→                ) : (
+   651→   651→                  <>
+   652→   652→                    <div className="overflow-x-auto border rounded-lg">
+   653→   653→                      <Table>
+   654→   654→                        <TableHeader>
+   655→   655→                          <TableRow className="bg-slate-50 hover:bg-slate-50">
+   656→   656→                            <TableHead className="text-[10px] font-semibold min-w-[70px] sticky left-0 bg-slate-50 z-10">A: First</TableHead>
+   657→   657→                            <TableHead className="text-[10px] font-semibold min-w-[70px]">B: Last</TableHead>
+   658→   658→                            <TableHead className="text-[10px] font-semibold min-w-[80px]">C: Title</TableHead>
+   659→   659→                            <TableHead className="text-[10px] font-semibold min-w-[80px]">D: Company</TableHead>
+   660→   660→                            <TableHead className="text-[10px] font-semibold min-w-[100px]">E: Domain</TableHead>
+   661→   661→                            <TableHead className="text-[10px] font-semibold min-w-[50px]">F: HC</TableHead>
+   662→   662→                            <TableHead className="text-[10px] font-semibold min-w-[70px]">G: Industry</TableHead>
+   663→   663→                            <TableHead className="text-[10px] font-semibold min-w-[70px]">H: Location</TableHead>
+   664→   664→                            {EMAIL_LABELS.map((label, i) => (
+   665→   665→                              <React.Fragment key={i}>
+   666→   666→                                <TableHead className={`text-[10px] font-semibold min-w-[150px] ${verifyStatus?.currentColumn === i + 1 && verifyStatus?.isRunning ? 'bg-emerald-50' : ''}`}>
+   667→   667→                                  {COL_LETTERS[i]}: {label}
+   668→   668→                                </TableHead>
+   669→   669→                                <TableHead className={`text-[10px] font-semibold min-w-[85px] ${verifyStatus?.currentColumn === i + 1 && verifyStatus?.isRunning ? 'bg-emerald-50' : ''}`}>
+   670→   670→                                  {STATUS_LETTERS[i]}: Status
+   671→   671→                                </TableHead>
+   672→   672→                              </React.Fragment>
+   673→   673→                            ))}
+   674→   674→                          </TableRow>
+   675→   675→                        </TableHeader>
+   676→   676→                        <TableBody>
+   677→   677→                          {contacts.length === 0 ? (
+   678→   678→                            <TableRow>
+   679→   679→                              <TableCell colSpan={20} className="text-center py-6 text-slate-400 text-xs">No contacts</TableCell>
+   680→   680→                            </TableRow>
+   681→   681→                          ) : (
+   682→   682→                            contacts.map(c => (
+   683→   683→                              <TableRow key={c.id} className="text-[11px] hover:bg-slate-50/50">
+   684→   684→                                <TableCell className="font-medium py-1.5 sticky left-0 bg-white z-10">{c.firstName}</TableCell>
+   685→   685→                                <TableCell className="font-medium py-1.5">{c.lastName}</TableCell>
+   686→   686→                                <TableCell className="text-slate-500 py-1.5">{c.jobTitle || '-'}</TableCell>
+   687→   687→                                <TableCell className="text-slate-500 py-1.5">{c.company || '-'}</TableCell>
+   688→   688→                                <TableCell className="text-blue-600 font-mono text-[10px] py-1.5">{c.domain}</TableCell>
+   689→   689→                                <TableCell className="py-1.5">{c.headCount || '-'}</TableCell>
+   690→   690→                                <TableCell className="py-1.5">{c.industry || '-'}</TableCell>
+   691→   691→                                <TableCell className="py-1.5">{c.location || '-'}</TableCell>
+   692→   692→                                {([c.email1, c.email2, c.email3, c.email4, c.email5, c.email6] as (string | null)[]).map((email, i) => {
+   693→   693→                                  const status = ([c.status1, c.status2, c.status3, c.status4, c.status5, c.status6] as string[])[i];
+   694→   694→                                  return (
+   695→   695→                                    <React.Fragment key={i}>
+   696→   696→                                      <TableCell className="font-mono text-[10px] py-1.5">{email || '-'}</TableCell>
+   697→   697→                                      <TableCell className="py-1.5"><StatusBadge status={status} /></TableCell>
+   698→   698→                                    </React.Fragment>
+   699→   699→                                  );
+   700→   700→                                })}
+   701→   701→                              </TableRow>
+   702→   702→                            ))
+   703→   703→                          )}
+   704→   704→                        </TableBody>
+   705→   705→                      </Table>
+   706→   706→                    </div>
+   707→   707→                    <div className="flex items-center justify-between mt-2">
+   708→   708→                      <p className="text-[10px] text-slate-400">
+   709→   709→                        {contacts.length} of {contactsTotal.toLocaleString()} contacts
+   710→   710→                      </p>
+   711→   711→                      <div className="flex gap-1">
+   712→   712→                        <Button variant="outline" size="sm" disabled={contactsPage <= 1} onClick={() => setContactsPage(p => p - 1)} className="h-6 text-[10px]">
+   713→   713→                          Prev
+   714→   714→                        </Button>
+   715→   715→                        <span className="text-[10px] text-slate-400 self-center px-1">
+   716→   716→                          {contactsPage}/{Math.max(1, Math.ceil(contactsTotal / 50))}
+   717→   717→                        </span>
+   718→   718→                        <Button variant="outline" size="sm" disabled={contactsPage >= Math.ceil(contactsTotal / 50)} onClick={() => setContactsPage(p => p + 1)} className="h-6 text-[10px]">
+   719→   719→                          Next
+   720→   720→                        </Button>
+   721→   721→                      </div>
+   722→   722→                    </div>
+   723→   723→                  </>
+   724→   724→                )}
+   725→   725→              </CardContent>
+   726→   726→            </Card>
+   727→   727→          </TabsContent>
+   728→   728→
+   729→   729→          {/* ===== API Keys ===== */}
+   730→   730→          <TabsContent value="keys" className="mt-3 space-y-3">
+   731→   731→            <Card>
+   732→   732→              <CardHeader className="pb-2 pt-3 px-4">
+   733→   733→                <div className="flex items-center justify-between">
+   734→   734→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   735→   735→                    <Key className="w-3.5 h-3.5" /> API Keys
+   736→   736→                  </CardTitle>
+   737→   737→                  <Dialog open={addKeyOpen} onOpenChange={setAddKeyOpen}>
+   738→   738→                    <DialogTrigger asChild>
+   739→   739→                      <Button size="sm" className="gap-1 h-7 text-[11px] bg-emerald-600 hover:bg-emerald-700">
+   740→   740→                        <Plus className="w-3 h-3" /> Add Key
+   741→   741→                      </Button>
+   742→   742→                    </DialogTrigger>
+   743→   743→                    <DialogContent>
+   744→   744→                      <DialogHeader>
+   745→   745→                        <DialogTitle className="text-sm">Add MailTester Ninja API Key</DialogTitle>
+   746→   746→                      </DialogHeader>
+   747→   747→                      <div className="space-y-3 py-3">
+   748→   748→                        <div>
+   749→   749→                          <Label className="text-xs">API Key</Label>
+   750→   750→                          <Input placeholder="Paste your MailTester Ninja key" value={newKey} onChange={e => setNewKey(e.target.value)} className="h-8 text-xs" />
+   751→   751→                        </div>
+   752→   752→                        <div>
+   753→   753→                          <Label className="text-xs">Label (optional)</Label>
+   754→   754→                          <Input placeholder="e.g., Pro Plan Key 1" value={newKeyLabel} onChange={e => setNewKeyLabel(e.target.value)} className="h-8 text-xs" />
+   755→   755→                        </div>
+   756→   756→                        <div className="grid grid-cols-2 gap-3">
+   757→   757→                          <div>
+   758→   758→                            <Label className="text-xs">Speed (ms gap)</Label>
+   759→   759→                            <Input type="number" value={newKeySpeed} onChange={e => setNewKeySpeed(parseInt(e.target.value) || 900)} className="h-8 text-xs" />
+   760→   760→                            <p className="text-[10px] text-slate-400 mt-0.5">Pro: 900ms · Ultimate: 170ms</p>
+   761→   761→                          </div>
+   762→   762→                          <div>
+   763→   763→                            <Label className="text-xs">Daily Limit</Label>
+   764→   764→                            <Input type="number" value={newKeyLimit} onChange={e => setNewKeyLimit(parseInt(e.target.value) || 86000)} className="h-8 text-xs" />
+   765→   765→                            <p className="text-[10px] text-slate-400 mt-0.5">Pro: 86,000 · Ultimate: 500,000</p>
+   766→   766→                          </div>
+   767→   767→                        </div>
+   768→   768→                        <Button className="w-full bg-emerald-600 hover:bg-emerald-700 text-xs" onClick={handleAddKey}>Add Key</Button>
+   769→   769→                      </div>
+   770→   770→                    </DialogContent>
+   771→   771→                  </Dialog>
+   772→   772→                </div>
+   773→   773→              </CardHeader>
+   774→   774→              <CardContent className="px-4 pb-3">
+   775→   775→                {apiKeys.length === 0 ? (
+   776→   776→                  <div className="text-center py-6 text-slate-400">
+   777→   777→                    <Key className="w-8 h-8 mx-auto mb-2 opacity-30" />
+   778→   778→                    <p className="text-xs">No API keys yet</p>
+   779→   779→                    <p className="text-[10px] mt-0.5">Add your MailTester Ninja key to start verifying</p>
+   780→   780→                  </div>
+   781→   781→                ) : (
+   782→   782→                  <div className="space-y-2">
+   783→   783→                    {apiKeys.map(k => (
+   784→   784→                      <div key={k.id} className="flex items-center justify-between p-2.5 rounded-lg border bg-white">
+   785→   785→                        <div className="flex items-center gap-2.5">
+   786→   786→                          <Switch checked={k.active} onCheckedChange={(checked) => handleToggleKey(k.id, checked)} />
+   787→   787→                          <div>
+   788→   788→                            <div className="font-mono text-xs">{k.key}</div>
+   789→   789→                            <div className="text-[10px] text-slate-400">
+   790→   790→                              {k.label || 'No label'} · {k.speedMs}ms gap · {k.dailyLimit.toLocaleString()}/day
+   791→   791→                            </div>
+   792→   792→                          </div>
+   793→   793→                        </div>
+   794→   794→                        <div className="flex items-center gap-2">
+   795→   795→                          <Badge variant="outline" className="text-[10px]">
+   796→   796→                            {k.usedToday.toLocaleString()} today
+   797→   797→                          </Badge>
+   798→   798→                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => handleDeleteKey(k.id)}>
+   799→   799→                            <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+   800→   800→                          </Button>
+   801→   801→                        </div>
+   802→   802→                      </div>
+   803→   803→                    ))}
+   804→   804→                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mt-2">
+   805→   805→                      <div className="text-[11px] font-medium text-blue-800">Speed with {apiKeys.filter(k => k.active).length} key{apiKeys.filter(k => k.active).length !== 1 ? 's' : ''}</div>
+   806→   806→                      <div className="text-[10px] text-blue-700 mt-0.5">
+   807→   807→                        ≈ <strong>{(verifyStatus?.keys?.effectivePerDay || 0).toLocaleString()}</strong> emails/day
+   808→   808→                        ({verifyStatus?.keys?.effectivePerSecond || 0}/sec).
+   809→   809→                        Each additional key multiplies your speed.
+   810→   810→                      </div>
+   811→   811→                    </div>
+   812→   812→                  </div>
+   813→   813→                )}
+   814→   814→              </CardContent>
+   815→   815→            </Card>
+   816→   816→          </TabsContent>
+   817→   817→        </Tabs>
+   818→   818→      </main>
+   819→   819→
+   820→   820→      {/* Footer */}
+   821→   821→      <footer className="mt-auto border-t bg-white py-2 text-center">
+   822→   822→        <p className="text-[10px] text-slate-400">
+   823→   823→          MailTester Ninja Engine · Server-side 24/7 verification · Auto-resumes after restart
+   824→   824→        </p>
+   825→   825→      </footer>
+   826→   826→    </div>
+   827→   827→  );
+   828→   828→}
+   829→   829→

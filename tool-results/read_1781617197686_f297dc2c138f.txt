@@ -1,0 +1,760 @@
+     1→import { db } from './db';
+     2→import { batchCheckMx } from './mx-utils';
+     3→
+     4→// Types
+     5→interface VerificationResult {
+     6→  email: string;
+     7→  user: string;
+     8→  domain: string;
+     9→  mx: string;
+    10→  code: string;     // ok, ko, mb
+    11→  message: string;  // Accepted, Limited, Rejected, Catch-All, No Mx, Mx Error, Timeout, SPAM Block
+    12→  connections: number;
+    13→}
+    14→
+    15→interface KeyState {
+    16→  id: string;
+    17→  key: string;
+    18→  label: string | null;
+    19→  lastUsed: number;
+    20→  usedToday: number;
+    21→  lastResetDate: string;
+    22→  speedMs: number;
+    23→  dailyLimit: number;
+    24→  active: boolean;
+    25→  timerId: ReturnType<typeof setTimeout> | null;
+    26→  consecutive429s: number;
+    27→}
+    28→
+    29→// Email column mapping (1-indexed)
+    30→const EMAIL_COLUMNS = ['email1', 'email2', 'email3', 'email4', 'email5', 'email6'] as const;
+    31→const STATUS_COLUMNS = ['status1', 'status2', 'status3', 'status4', 'status5', 'status6'] as const;
+    32→const MESSAGE_COLUMNS = ['message1', 'message2', 'message3', 'message4', 'message5', 'message6'] as const;
+    33→
+    34→/**
+    35→ * Singleton verification engine with per-key parallel processing.
+    36→ *
+    37→ * CRITICAL FIX: Uses "verifying" intermediate status to atomically claim
+    38→ * an email. This prevents multiple keys from grabbing the same email.
+    39→ *
+    40→ * Flow: pending → verifying → valid/invalid/catch-all/no-mx/unverifiable/error
+    41→ *
+    42→ * 429 RATE LIMITING STRATEGY:
+    43→ * - When a 429 occurs, the email is put BACK to "pending" (not "error")
+    44→ *   so it's automatically retried later — no emails are lost.
+    45→ * - A GLOBAL backoff is applied: when ANY key gets a 429, ALL keys
+    46→ *   pause for the backoff duration (they share the same IP/account limit).
+    47→ * - Progressive backoff: 10s, 20s, 30s, ... up to 120s.
+    48→ * - When 429s stop, backoff resets to 0 and speed returns to normal.
+    49→ */
+    50→class VerificationEngine {
+    51→  private running = false;
+    52→  private currentBatchId: string | null = null;
+    53→  private currentColumn = 1; // 1-6
+    54→  private domainCache = new Map<string, 'catch-all' | 'no-mx'>();
+    55→  private keyStates = new Map<string, KeyState>();
+    56→  private processingLocks = new Map<string, boolean>();
+    57→  private stats = {
+    58→    verifiedThisRun: 0,
+    59→    skippedThisRun: 0,
+    60→    errorsThisRun: 0,
+    61→    startTime: 0,
+    62→  };
+    63→  // MX pre-check state
+    64→  private mxCheckRunning = false;
+    65→  private mxCheckProgress = { checked: 0, total: 0, noMxFound: 0, emailsMarked: 0, done: false, error: '' };
+    66→  // Global 429 backoff — shared across all keys (they hit the same API account/IP)
+    67→  private global429BackoffUntil = 0; // timestamp when we can resume
+    68→  private globalConsecutive429s = 0;
+    69→
+    70→  constructor() {
+    71→    this.tryAutoResume();
+    72→  }
+    73→
+    74→  private async tryAutoResume() {
+    75→    try {
+    76→      // First, reset any "verifying" statuses back to "pending" from a previous crash
+    77→      for (let col = 0; col < 6; col++) {
+    78→        const statusCol = STATUS_COLUMNS[col];
+    79→        await db.contact.updateMany({
+    80→          where: { [statusCol]: 'verifying' } as any,
+    81→          data: { [statusCol]: 'pending' },
+    82→        });
+    83→      }
+    84→
+    85→      const state = await db.verificationState.findUnique({ where: { id: 'main' } });
+    86→      if (state?.isRunning && state.currentBatchId) {
+    87→        const batch = await db.batch.findUnique({ where: { id: state.currentBatchId } });
+    88→        if (batch && batch.status === 'verifying') {
+    89→          console.log('[Engine] Auto-resuming verification for batch:', state.currentBatchId);
+    90→          this.currentBatchId = state.currentBatchId;
+    91→          this.currentColumn = state.currentColumn;
+    92→          await this.loadDomainCache();
+    93→          await this.loadKeyStates();
+    94→          this.running = true;
+    95→          this.stats.startTime = Date.now();
+    96→          this.startAllKeyLoops();
+    97→        } else {
+    98→          await db.verificationState.update({
+    99→            where: { id: 'main' },
+   100→            data: { isRunning: false },
+   101→          });
+   102→        }
+   103→      }
+   104→    } catch (err) {
+   105→      console.error('[Engine] Auto-resume failed:', err);
+   106→    }
+   107→  }
+   108→
+   109→  async start(batchId: string): Promise<{ success: boolean; message: string }> {
+   110→    if (this.running) {
+   111→      await this.stop();
+   112→    }
+   113→
+   114→    const keys = await db.apiKey.findMany({ where: { active: true } });
+   115→    if (keys.length === 0) {
+   116→      return { success: false, message: 'No active API keys. Please add at least one API key.' };
+   117→    }
+   118→
+   119→    const batch = await db.batch.findUnique({ where: { id: batchId } });
+   120→    if (!batch) {
+   121→      return { success: false, message: 'Batch not found.' };
+   122→    }
+   123→
+   124→    // Find the first column with pending emails
+   125→    let startColumn = 1;
+   126→    for (let col = 1; col <= 6; col++) {
+   127→      const statusCol = STATUS_COLUMNS[col - 1];
+   128→      const pendingCount = await db.contact.count({
+   129→        where: { batchId, [statusCol]: 'pending' } as any,
+   130→      });
+   131→      if (pendingCount > 0) {
+   132→        startColumn = col;
+   133→        break;
+   134→      }
+   135→    }
+   136→
+   137→    this.currentBatchId = batchId;
+   138→    this.currentColumn = startColumn;
+   139→    this.running = true;
+   140→    this.stats = { verifiedThisRun: 0, skippedThisRun: 0, errorsThisRun: 0, startTime: Date.now() };
+   141→
+   142→    await this.loadDomainCache();
+   143→    await this.loadKeyStates();
+   144→
+   145→    await db.verificationState.upsert({
+   146→      where: { id: 'main' },
+   147→      update: { isRunning: true, currentBatchId: batchId, currentColumn: startColumn, startedAt: new Date(), lastHeartbeat: new Date() },
+   148→      create: { id: 'main', isRunning: true, currentBatchId: batchId, currentColumn: startColumn, startedAt: new Date(), lastHeartbeat: new Date() },
+   149→    });
+   150→
+   151→    await db.batch.update({ where: { id: batchId }, data: { status: 'verifying', currentColumn: startColumn } });
+   152→
+   153→    this.startAllKeyLoops();
+   154→    return { success: true, message: `Verification started with ${this.keyStates.size} key(s) in parallel.` };
+   155→  }
+   156→
+   157→  /**
+   158→   * Reverify: reset error/rate-limited emails back to pending and start verification.
+   159→   */
+   160→  async reverify(batchId: string, statuses: string[]): Promise<{ success: boolean; message: string; resetCount: number }> {
+   161→    if (this.running) {
+   162→      await this.stop();
+   163→    }
+   164→
+   165→    let resetCount = 0;
+   166→    for (let col = 0; col < 6; col++) {
+   167→      const statusCol = STATUS_COLUMNS[col];
+   168→      const result = await db.contact.updateMany({
+   169→        where: {
+   170→          batchId,
+   171→          [statusCol]: { in: statuses },
+   172→        } as any,
+   173→        data: { [statusCol]: 'pending' },
+   174→      });
+   175→      resetCount += result.count;
+   176→    }
+   177→
+   178→    if (resetCount === 0) {
+   179→      return { success: false, message: 'No emails found with the specified statuses to reverify.', resetCount: 0 };
+   180→    }
+   181→
+   182→    // Now start verification
+   183→    const startResult = await this.start(batchId);
+   184→    return { success: startResult.success, message: `Reset ${resetCount} emails to pending. ${startResult.message}`, resetCount };
+   185→  }
+   186→
+   187→  /**
+   188→   * Pre-check MX records for all domains in a batch WITHOUT using API credits.
+   189→   * Uses Node.js DNS resolver to check MX records directly.
+   190→   * Marks all emails under domains with no MX as "no-mx" and caches the domain.
+   191→   * 
+   192→   * This saves API credits because the verification loop will skip
+   193→   * these domains entirely (via the domainCache check).
+   194→   * 
+   195→   * Runs in the BACKGROUND — returns immediately. Use getMxCheckStatus() to poll.
+   196→   */
+   197→  async preCheckMx(batchId: string): Promise<{
+   198→    success: boolean;
+   199→    message: string;
+   200→    totalDomains: number;
+   201→  }> {
+   202→    if (this.mxCheckRunning) {
+   203→      return {
+   204→        success: false,
+   205→        message: 'MX pre-check is already running. Wait for it to finish.',
+   206→        totalDomains: 0,
+   207→      };
+   208→    }
+   209→    if (this.running) {
+   210→      return {
+   211→        success: false,
+   212→        message: 'Cannot pre-check MX while verification is running. Stop verification first.',
+   213→        totalDomains: 0,
+   214→      };
+   215→    }
+   216→
+   217→    const batch = await db.batch.findUnique({ where: { id: batchId } });
+   218→    if (!batch) {
+   219→      return { success: false, message: 'Batch not found.', totalDomains: 0 };
+   220→    }
+   221→
+   222→    // Kick off the background task
+   223→    this.mxCheckRunning = true;
+   224→    this.mxCheckProgress = { checked: 0, total: 0, noMxFound: 0, emailsMarked: 0, done: false, error: '' };
+   225→
+   226→    // Run async in the background — do NOT await
+   227→    this.runMxPreCheckInBackground(batchId).catch(err => {
+   228→      console.error('[Engine] MX pre-check background error:', err);
+   229→      this.mxCheckProgress.error = err.message || 'Unknown error';
+   230→      this.mxCheckProgress.done = true;
+   231→      this.mxCheckRunning = false;
+   232→    });
+   233→
+   234→    return {
+   235→      success: true,
+   236→      message: 'MX pre-check started in background. Use the status endpoint to monitor progress.',
+   237→      totalDomains: 0, // Will be updated by background task
+   238→    };
+   239→  }
+   240→
+   241→  /**
+   242→   * Get current MX pre-check progress.
+   243→   */
+   244→  getMxCheckStatus() {
+   245→    return {
+   246→      running: this.mxCheckRunning,
+   247→      ...this.mxCheckProgress,
+   248→    };
+   249→  }
+   250→
+   251→  /**
+   252→   * Background worker for MX pre-check. Does the actual work.
+   253→   */
+   254→  private async runMxPreCheckInBackground(batchId: string) {
+   255→    console.log('[Engine] MX pre-check starting in background for batch:', batchId);
+   256→
+   257→    // Load existing domain cache first
+   258→    await this.loadDomainCache();
+   259→
+   260→    // 1. Get all unique domains from the batch that aren't already cached as no-mx
+   261→    const contacts = await db.contact.findMany({
+   262→      where: { batchId },
+   263→      select: { domain: true },
+   264→    });
+   265→
+   266→    const uniqueDomains = [...new Set(contacts.map(c => c.domain.toLowerCase()))];
+   267→    // Filter out domains already known to be no-mx
+   268→    const domainsToCheck = uniqueDomains.filter(d => !this.domainCache.has(d));
+   269→
+   270→    this.mxCheckProgress.total = domainsToCheck.length;
+   271→    console.log(`[Engine] MX pre-check: ${uniqueDomains.length} unique domains, ${domainsToCheck.length} need checking (${this.domainCache.size} already cached)`);
+   272→
+   273→    // 2. Batch check MX records (with progress callback)
+   274→    const mxResults = await batchCheckMx(domainsToCheck, 50, (checked, total, noMxCount) => {
+   275→      this.mxCheckProgress.checked = checked;
+   276→      this.mxCheckProgress.noMxFound = noMxCount;
+   277→    });
+   278→
+   279→    // 3. Find no-MX domains and cache them
+   280→    const noMxDomains: string[] = [];
+   281→    for (const [domain, hasMx] of mxResults.entries()) {
+   282→      if (!hasMx) {
+   283→        noMxDomains.push(domain);
+   284→        this.domainCache.set(domain, 'no-mx');
+   285→        await db.domainCache.upsert({
+   286→          where: { domain },
+   287→          update: { status: 'no-mx' },
+   288→          create: { domain, status: 'no-mx' },
+   289→        });
+   290→      }
+   291→    }
+   292→
+   293→    // Also include previously cached no-mx domains
+   294→    const cachedNoMx = uniqueDomains.filter(d => this.domainCache.get(d) === 'no-mx');
+   295→    const allNoMxDomains = [...new Set([...noMxDomains, ...cachedNoMx])];
+   296→
+   297→    // 4. Mark all pending emails under no-MX domains across all 6 columns
+   298→    let emailsMarked = 0;
+   299→    for (let col = 0; col < 6; col++) {
+   300→      const statusCol = STATUS_COLUMNS[col];
+   301→      const msgCol = MESSAGE_COLUMNS[col];
+   302→
+   303→      // Only update emails that are still "pending" — don't overwrite already-verified results
+   304→      for (const domain of allNoMxDomains) {
+   305→        const result = await db.contact.updateMany({
+   306→          where: {
+   307→            batchId,
+   308→            domain,
+   309→            [statusCol]: 'pending',
+   310→          } as any,
+   311→          data: {
+   312→            [statusCol]: 'no-mx',
+   313→            [msgCol]: 'No MX records (pre-check)',
+   314→          },
+   315→        });
+   316→        emailsMarked += result.count;
+   317→        this.mxCheckProgress.emailsMarked = emailsMarked;
+   318→      }
+   319→    }
+   320→
+   321→    // 5. Update batch progress
+   322→    await this.updateBatchProgressForBatch(batchId);
+   323→
+   324→    this.mxCheckProgress.done = true;
+   325→    this.mxCheckRunning = false;
+   326→    console.log(`[Engine] MX pre-check complete: ${noMxDomains.length} new no-MX domains, ${emailsMarked} emails marked`);
+   327→  }
+   328→
+   329→  async stop(): Promise<{ success: boolean; message: string }> {
+   330→    this.running = false;
+   331→
+   332→    for (const [, keyState] of this.keyStates.entries()) {
+   333→      if (keyState.timerId) {
+   334→        clearTimeout(keyState.timerId);
+   335→        keyState.timerId = null;
+   336→      }
+   337→    }
+   338→
+   339→    // Reset any "verifying" statuses back to "pending"
+   340→    for (let col = 0; col < 6; col++) {
+   341→      const statusCol = STATUS_COLUMNS[col];
+   342→      await db.contact.updateMany({
+   343→        where: { [statusCol]: 'verifying' } as any,
+   344→        data: { [statusCol]: 'pending' },
+   345→      }).catch(() => {});
+   346→    }
+   347→
+   348→    await db.verificationState.upsert({
+   349→      where: { id: 'main' },
+   350→      update: { isRunning: false, currentColumn: this.currentColumn, lastHeartbeat: new Date() },
+   351→      create: { id: 'main', isRunning: false, currentColumn: this.currentColumn, lastHeartbeat: new Date() },
+   352→    });
+   353→
+   354→    if (this.currentBatchId) {
+   355→      await db.batch.update({ where: { id: this.currentBatchId }, data: { status: 'paused', currentColumn: this.currentColumn } });
+   356→    }
+   357→
+   358→    await this.flushKeyUsage();
+   359→    return { success: true, message: 'Verification stopped.' };
+   360→  }
+   361→
+   362→  getStatus() {
+   363→    const now = Date.now();
+   364→    const backoffRemaining = this.global429BackoffUntil > now ? Math.ceil((this.global429BackoffUntil - now) / 1000) : 0;
+   365→    return {
+   366→      isRunning: this.running,
+   367→      currentBatchId: this.currentBatchId,
+   368→      currentColumn: this.currentColumn,
+   369→      stats: { ...this.stats },
+   370→      activeKeys: this.keyStates.size,
+   371→      rateLimited: backoffRemaining > 0,
+   372→      rateLimitBackoffSeconds: backoffRemaining,
+   373→      consecutive429s: this.globalConsecutive429s,
+   374→    };
+   375→  }
+   376→
+   377→  private startAllKeyLoops() {
+   378→    console.log(`[Engine] Starting ${this.keyStates.size} parallel key loops`);
+   379→    for (const [keyStr, keyState] of this.keyStates.entries()) {
+   380→      if (!keyState.active) continue;
+   381→      const staggerMs = Math.random() * 200;
+   382→      keyState.timerId = setTimeout(() => {
+   383→        this.processNextForKey(keyStr);
+   384→      }, staggerMs);
+   385→    }
+   386→  }
+   387→
+   388→  /**
+   389→   * Core processing loop for each API key.
+   390→   * Uses atomic "verifying" status to claim emails — prevents duplicate processing.
+   391→   */
+   392→  private async processNextForKey(keyStr: string) {
+   393→    if (!this.running || !this.currentBatchId) return;
+   394→
+   395→    const keyState = this.keyStates.get(keyStr);
+   396→    if (!keyState || !keyState.active) return;
+   397→
+   398→    if (this.processingLocks.get(keyStr)) return;
+   399→    this.processingLocks.set(keyStr, true);
+   400→
+   401→    try {
+   402→      // Check daily limit
+   403→      const today = new Date().toISOString().split('T')[0];
+   404→      if (keyState.lastResetDate !== today) {
+   405→        keyState.usedToday = 0;
+   406→        keyState.lastResetDate = today;
+   407→      }
+   408→      if (keyState.usedToday >= keyState.dailyLimit) {
+   409→        console.log(`[Engine] Key ${keyState.label || keyStr.substring(0, 8) + '...'} daily limit reached`);
+   410→        this.processingLocks.set(keyStr, false);
+   411→        keyState.timerId = setTimeout(() => this.processNextForKey(keyStr), 5 * 60 * 1000);
+   412→        return;
+   413→      }
+   414→
+   415→      // GLOBAL 429 BACKOFF CHECK — if any key got a 429 recently, ALL keys wait
+   416→      const now = Date.now();
+   417→      if (this.global429BackoffUntil > now) {
+   418→        const waitMs = this.global429BackoffUntil - now;
+   419→        this.processingLocks.set(keyStr, false);
+   420→        keyState.timerId = setTimeout(() => {
+   421→          this.processNextForKey(keyStr);
+   422→        }, waitMs + 100); // small buffer
+   423→        return;
+   424→      }
+   425→
+   426→      // Enforce rate limit
+   427→      const elapsed = now - keyState.lastUsed;
+   428→      const waitMs = keyState.lastUsed === 0 ? 0 : Math.max(0, keyState.speedMs - elapsed);
+   429→      if (waitMs > 0) {
+   430→        keyState.timerId = setTimeout(() => {
+   431→          this.processingLocks.set(keyStr, false);
+   432→          this.processNextForKey(keyStr);
+   433→        }, waitMs);
+   434→        return;
+   435→      }
+   436→
+   437→      // ATOMIC CLAIM: Find a pending email and mark it as "verifying" in one operation
+   438→      // This prevents multiple keys from grabbing the same email
+   439→      const statusCol = STATUS_COLUMNS[this.currentColumn - 1];
+   440→      const emailCol = EMAIL_COLUMNS[this.currentColumn - 1];
+   441→      const msgCol = MESSAGE_COLUMNS[this.currentColumn - 1];
+   442→
+   443→      const contact = await db.contact.findFirst({
+   444→        where: { batchId: this.currentBatchId, [statusCol]: 'pending' } as any,
+   445→        orderBy: { id: 'asc' },
+   446→      });
+   447→
+   448→      if (!contact) {
+   449→        // No more pending emails in this column, move to next
+   450→        this.currentColumn++;
+   451→        if (this.currentColumn > 6) {
+   452→          await this.completeVerification();
+   453→          return;
+   454→        }
+   455→        await db.verificationState.update({ where: { id: 'main' }, data: { currentColumn: this.currentColumn } });
+   456→        await db.batch.update({ where: { id: this.currentBatchId! }, data: { currentColumn: this.currentColumn } });
+   457→        this.processingLocks.set(keyStr, false);
+   458→        this.processNextForKey(keyStr);
+   459→        return;
+   460→      }
+   461→
+   462→      const email = (contact as any)[emailCol] as string | null;
+   463→
+   464→      if (!email) {
+   465→        await db.contact.update({
+   466→          where: { id: contact.id },
+   467→          data: { [statusCol]: 'skipped', [msgCol]: 'No email generated' },
+   468→        });
+   469→        this.stats.skippedThisRun++;
+   470→        await this.updateBatchProgress();
+   471→        this.processingLocks.set(keyStr, false);
+   472→        this.processNextForKey(keyStr);
+   473→        return;
+   474→      }
+   475→
+   476→      // ATOMIC CLAIM: Mark as "verifying" so no other key picks this up
+   477→      const claimResult = await db.contact.updateMany({
+   478→        where: { id: contact.id, [statusCol]: 'pending' } as any,
+   479→        data: { [statusCol]: 'verifying' },
+   480→      });
+   481→
+   482→      if (claimResult.count === 0) {
+   483→        // Another key already claimed this email — skip and try next
+   484→        this.processingLocks.set(keyStr, false);
+   485→        this.processNextForKey(keyStr);
+   486→        return;
+   487→      }
+   488→
+   489→      // Check domain cache for catch-all / no-mx
+   490→      const domain = email.split('@')[1]?.toLowerCase();
+   491→      if (domain && this.domainCache.has(domain)) {
+   492→        const cacheStatus = this.domainCache.get(domain)!;
+   493→        await db.contact.update({
+   494→          where: { id: contact.id },
+   495→          data: { [statusCol]: `skipped-${cacheStatus}`, [msgCol]: `Domain is ${cacheStatus}` },
+   496→        });
+   497→        this.stats.skippedThisRun++;
+   498→        await this.updateBatchProgress();
+   499→        this.processingLocks.set(keyStr, false);
+   500→        // Continue immediately — no API call was made
+   501→        this.processNextForKey(keyStr);
+   502→        return;
+   503→      }
+   504→
+   505→      // Make API call
+   506→      try {
+   507→        const result = await this.verifyEmail(email, keyState.key);
+   508→
+   509→        let status = result.code;
+   510→        let message = result.message;
+   511→
+   512→        if (message === 'Catch-All') {
+   513→          status = 'catch-all';
+   514→          if (domain) {
+   515→            this.domainCache.set(domain, 'catch-all');
+   516→            await db.domainCache.upsert({ where: { domain }, update: { status: 'catch-all' }, create: { domain, status: 'catch-all' } });
+   517→          }
+   518→        } else if (message === 'No Mx') {
+   519→          status = 'no-mx';
+   520→          if (domain) {
+   521→            this.domainCache.set(domain, 'no-mx');
+   522→            await db.domainCache.upsert({ where: { domain }, update: { status: 'no-mx' }, create: { domain, status: 'no-mx' } });
+   523→          }
+   524→        } else if (result.code === 'ok') {
+   525→          status = 'valid';
+   526→        } else if (result.code === 'ko') {
+   527→          status = 'invalid';
+   528→        } else if (result.code === 'mb') {
+   529→          status = 'unverifiable';
+   530→        }
+   531→
+   532→        await db.contact.update({
+   533→          where: { id: contact.id },
+   534→          data: { [statusCol]: status, [msgCol]: message },
+   535→        });
+   536→
+   537→        this.stats.verifiedThisRun++;
+   538→        keyState.lastUsed = Date.now();
+   539→        keyState.usedToday++;
+   540→        keyState.consecutive429s = 0;
+   541→        // Reset global backoff on success
+   542→        if (this.globalConsecutive429s > 0) {
+   543→          this.globalConsecutive429s = 0;
+   544→          this.global429BackoffUntil = 0;
+   545→        }
+   546→      } catch (err: any) {
+   547→        const errMsg = err.message || 'Unknown error';
+   548→
+   549→        // ========== 429 RATE LIMIT HANDLING ==========
+   550→        if (errMsg.includes('429')) {
+   551→          // Increment global consecutive 429 counter
+   552→          this.globalConsecutive429s++;
+   553→          keyState.consecutive429s++;
+   554→
+   555→          // Progressive GLOBAL backoff: 10s, 20s, 30s, 40s, 60s, 90s, 120s (cap)
+   556→          const backoffMs = Math.min(120000, 10000 * this.globalConsecutive429s);
+   557→          this.global429BackoffUntil = Date.now() + backoffMs;
+   558→
+   559→          console.log(`[Engine] 429 rate limit (global x${this.globalConsecutive429s}) — ALL keys backing off ${backoffMs / 1000}s. Email put back to pending.`);
+   560→
+   561→          // CRITICAL FIX: Put the email BACK to "pending" so it's retried automatically
+   562→          // — do NOT mark it as "error". The API rejected the request, so no credit
+   563→          // was consumed. The email should get another chance after backoff.
+   564→          await db.contact.update({
+   565→            where: { id: contact.id },
+   566→            data: { [statusCol]: 'pending', [msgCol]: `Retrying after rate limit (backoff ${backoffMs / 1000}s)` },
+   567→          });
+   568→
+   569→          this.processingLocks.set(keyStr, false);
+   570→          keyState.timerId = setTimeout(() => {
+   571→            this.processNextForKey(keyStr);
+   572→          }, backoffMs + 200); // small buffer beyond backoff
+   573→          await this.updateHeartbeat();
+   574→          await this.updateBatchProgress();
+   575→          return;
+   576→        }
+   577→
+   578→        // ========== TIMEOUT / NETWORK ERROR — RETRY ==========
+   579→        if (errMsg.includes('timeout') || errMsg.includes('aborted') || errMsg.includes('fetch failed') || errMsg.includes('ECONNRESET') || errMsg.includes('ETIMEDOUT')) {
+   580→          console.warn(`[Engine] Transient error for ${email}: ${errMsg.substring(0, 100)} — putting back to pending for retry`);
+   581→
+   582→          // Put the email back to pending — transient errors should not permanently fail an email
+   583→          await db.contact.update({
+   584→            where: { id: contact.id },
+   585→            data: { [statusCol]: 'pending', [msgCol]: `Transient error, will retry: ${errMsg.substring(0, 150)}` },
+   586→          });
+   587→
+   588→          // Short backoff for this key only (not global) — 3 seconds
+   589→          this.processingLocks.set(keyStr, false);
+   590→          keyState.lastUsed = Date.now();
+   591→          keyState.timerId = setTimeout(() => {
+   592→            this.processNextForKey(keyStr);
+   593→          }, 3000);
+   594→          await this.updateHeartbeat();
+   595→          await this.updateBatchProgress();
+   596→          return;
+   597→        }
+   598→
+   599→        // ========== OTHER ERRORS — MARK AS ERROR (real failures) ==========
+   600→        console.error('[Engine] Verification error:', errMsg);
+   601→        await db.contact.update({
+   602→          where: { id: contact.id },
+   603→          data: { [statusCol]: 'error', [msgCol]: errMsg.substring(0, 200) },
+   604→        });
+   605→        this.stats.errorsThisRun++;
+   606→        keyState.lastUsed = Date.now();
+   607→      }
+   608→
+   609→      await this.updateHeartbeat();
+   610→      await this.updateBatchProgress();
+   611→
+   612→      // Schedule next for this key after its speed delay
+   613→      this.processingLocks.set(keyStr, false);
+   614→      keyState.timerId = setTimeout(() => {
+   615→        this.processNextForKey(keyStr);
+   616→      }, keyState.speedMs);
+   617→    } catch (err) {
+   618→      console.error('[Engine] Process error for key:', keyStr, err);
+   619→      this.processingLocks.set(keyStr, false);
+   620→      const ks = this.keyStates.get(keyStr);
+   621→      if (ks) {
+   622→        ks.timerId = setTimeout(() => this.processNextForKey(keyStr), 5000);
+   623→      }
+   624→    }
+   625→  }
+   626→
+   627→  private async completeVerification() {
+   628→    this.running = false;
+   629→
+   630→    for (const [, keyState] of this.keyStates.entries()) {
+   631→      if (keyState.timerId) { clearTimeout(keyState.timerId); keyState.timerId = null; }
+   632→    }
+   633→
+   634→    if (this.currentBatchId) {
+   635→      await db.batch.update({ where: { id: this.currentBatchId }, data: { status: 'completed' } });
+   636→    }
+   637→    await db.verificationState.update({ where: { id: 'main' }, data: { isRunning: false } });
+   638→    await this.flushKeyUsage();
+   639→    console.log('[Engine] Verification complete for batch:', this.currentBatchId);
+   640→  }
+   641→
+   642→  private async loadDomainCache() {
+   643→    const caches = await db.domainCache.findMany();
+   644→    this.domainCache.clear();
+   645→    for (const c of caches) {
+   646→      if (c.status === 'catch-all' || c.status === 'no-mx') {
+   647→        this.domainCache.set(c.domain, c.status);
+   648→      }
+   649→    }
+   650→    console.log(`[Engine] Loaded ${this.domainCache.size} domain cache entries`);
+   651→  }
+   652→
+   653→  private async loadKeyStates() {
+   654→    const keys = await db.apiKey.findMany({ where: { active: true } });
+   655→    this.keyStates.clear();
+   656→    this.processingLocks.clear();
+   657→    const today = new Date().toISOString().split('T')[0];
+   658→    for (const k of keys) {
+   659→      const lastResetDate = k.lastResetDate || today;
+   660→      const usedToday = lastResetDate === today ? k.usedToday : 0;
+   661→      this.keyStates.set(k.key, {
+   662→        id: k.id,
+   663→        key: k.key,
+   664→        label: k.label,
+   665→        lastUsed: 0,
+   666→        usedToday,
+   667→        lastResetDate: today,
+   668→        speedMs: k.speedMs,
+   669→        dailyLimit: k.dailyLimit,
+   670→        active: true,
+   671→        timerId: null,
+   672→        consecutive429s: 0,
+   673→      });
+   674→      this.processingLocks.set(k.key, false);
+   675→      if (lastResetDate !== today) {
+   676→        await db.apiKey.update({ where: { id: k.id }, data: { usedToday: 0, lastResetDate: today } });
+   677→      }
+   678→    }
+   679→    console.log(`[Engine] Loaded ${this.keyStates.size} API keys`);
+   680→  }
+   681→
+   682→  private async flushKeyUsage() {
+   683→    for (const [key, state] of this.keyStates.entries()) {
+   684→      await db.apiKey.updateMany({
+   685→        where: { key },
+   686→        data: { usedToday: state.usedToday, lastResetDate: state.lastResetDate },
+   687→      });
+   688→    }
+   689→  }
+   690→
+   691→  private async verifyEmail(email: string, apiKey: string): Promise<VerificationResult> {
+   692→    const url = `https://happy.mailtester.ninja/ninja?email=${encodeURIComponent(email)}&key=${encodeURIComponent(apiKey)}`;
+   693→    const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+   694→    if (!response.ok) {
+   695→      throw new Error(`API returned ${response.status}: ${response.statusText}`);
+   696→    }
+   697→    const data = await response.json();
+   698→    return data as VerificationResult;
+   699→  }
+   700→
+   701→  private async updateHeartbeat() {
+   702→    try {
+   703→      await db.verificationState.update({ where: { id: 'main' }, data: { lastHeartbeat: new Date() } });
+   704→    } catch {}
+   705→  }
+   706→
+   707→  private async updateBatchProgress() {
+   708→    if (!this.currentBatchId) return;
+   709→    try {
+   710→      await this.updateBatchProgressForBatch(this.currentBatchId, this.currentColumn);
+   711→    } catch (err) {
+   712→      console.error('[Engine] Progress update error:', err);
+   713→    }
+   714→  }
+   715→
+   716→  /**
+   717→   * Update batch progress for any batch ID (used by preCheckMx and normal verification).
+   718→   */
+   719→  private async updateBatchProgressForBatch(batchId: string, currentColumn?: number) {
+   720→    try {
+   721→      let verifiedCount = 0;
+   722→      let skippedCount = 0;
+   723→      for (let col = 0; col < 6; col++) {
+   724→        const statusCol = STATUS_COLUMNS[col];
+   725→        const v = await db.contact.count({
+   726→          where: {
+   727→            batchId,
+   728→            OR: [
+   729→              { [statusCol]: 'valid' }, { [statusCol]: 'invalid' },
+   730→              { [statusCol]: 'unverifiable' }, { [statusCol]: 'catch-all' },
+   731→              { [statusCol]: 'no-mx' }, { [statusCol]: 'error' },
+   732→            ],
+   733→          } as any,
+   734→        });
+   735→        verifiedCount += v;
+   736→        const s = await db.contact.count({
+   737→          where: { batchId, [statusCol]: { startsWith: 'skipped' } } as any,
+   738→        });
+   739→        skippedCount += s;
+   740→      }
+   741→      const data: any = { verifiedEmails: verifiedCount, skippedEmails: skippedCount };
+   742→      if (currentColumn !== undefined) {
+   743→        data.currentColumn = currentColumn;
+   744→      }
+   745→      await db.batch.update({ where: { id: batchId }, data });
+   746→    } catch (err) {
+   747→      console.error('[Engine] Batch progress update error:', err);
+   748→    }
+   749→  }
+   750→}
+   751→
+   752→let engineInstance: VerificationEngine | null = null;
+   753→
+   754→export function getVerificationEngine(): VerificationEngine {
+   755→  if (!engineInstance) {
+   756→    engineInstance = new VerificationEngine();
+   757→  }
+   758→  return engineInstance;
+   759→}
+   760→

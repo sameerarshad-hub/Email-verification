@@ -1,0 +1,393 @@
+     1→   501→   501→   501→            </TabsTrigger>
+     2→   502→   502→   502→            <TabsTrigger value="spreadsheet" className="gap-1 text-xs px-3">
+     3→   503→   503→   503→              <FileSpreadsheet className="w-3.5 h-3.5" /> Spreadsheet
+     4→   504→   504→   504→            </TabsTrigger>
+     5→   505→   505→   505→            <TabsTrigger value="keys" className="gap-1 text-xs px-3">
+     6→   506→   506→   506→              <Key className="w-3.5 h-3.5" /> API Keys
+     7→   507→   507→   507→            </TabsTrigger>
+     8→   508→   508→   508→          </TabsList>
+     9→   509→   509→   509→
+    10→   510→   510→   510→          {/* ===== Dashboard ===== */}
+    11→   511→   511→   511→          <TabsContent value="dashboard" className="space-y-3 mt-3">
+    12→   512→   512→   512→            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    13→   513→   513→   513→              {/* Upload */}
+    14→   514→   514→   514→              <Card>
+    15→   515→   515→   515→                <CardHeader className="pb-2 pt-3 px-4">
+    16→   516→   516→   516→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+    17→   517→   517→   517→                    <Upload className="w-3.5 h-3.5" /> Upload CSV
+    18→   518→   518→   518→                  </CardTitle>
+    19→   519→   519→   519→                </CardHeader>
+    20→   520→   520→   520→                <CardContent className="px-4 pb-3">
+    21→   521→   521→   521→                  <input type="file" accept=".csv,.txt" onChange={handleUpload} ref={fileInputRef} className="hidden" />
+    22→   522→   522→   522→                  <Button variant="outline" className="w-full h-16 border-dashed border-2 hover:border-emerald-400 hover:bg-emerald-50/50 text-xs" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+    23→   523→   523→   523→                    {uploading ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Upload className="w-4 h-4 mr-1.5 text-slate-400" />}
+    24→   524→   524→   524→                    {uploading ? 'Processing...' : 'Click to upload CSV'}
+    25→   525→   525→   525→                  </Button>
+    26→   526→   526→   526→                  <p className="text-[10px] text-slate-400 mt-1.5">Columns: First Name, Last Name, Website/Domain (required) + Job Title, Company, Head Count, Industry, Location</p>
+    27→   527→   527→   527→                  <p className="text-[10px] text-emerald-500 mt-0.5">Verification auto-starts after upload</p>
+    28→   528→   528→   528→                </CardContent>
+    29→   529→   529→   529→              </Card>
+    30→   530→   530→   530→
+    31→   531→   531→   531→              {/* Controls */}
+    32→   532→   532→   532→              <Card>
+    33→   533→   533→   533→                <CardHeader className="pb-2 pt-3 px-4">
+    34→   534→   534→   534→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+    35→   535→   535→   535→                    <Settings className="w-3.5 h-3.5" /> Controls
+    36→   536→   536→   536→                  </CardTitle>
+    37→   537→   537→   537→                </CardHeader>
+    38→   538→   538→   538→                <CardContent className="px-4 pb-3 space-y-2">
+    39→   539→   539→   539→                  <Select value={selectedBatchId || ''} onValueChange={setSelectedBatchId}>
+    40→   540→   540→   540→                    <SelectTrigger className="h-8 text-xs">
+    41→   541→   541→   541→                      <SelectValue placeholder="Select batch..." />
+    42→   542→   542→   542→                    </SelectTrigger>
+    43→   543→   543→   543→                    <SelectContent>
+    44→   544→   544→   544→                      {batches.map(b => (
+    45→   545→   545→   545→                        <SelectItem key={b.id} value={b.id}>
+    46→   546→   546→   546→                          {b.name} ({b._count?.contacts || b.totalContacts} contacts)
+    47→   547→   547→   547→                        </SelectItem>
+    48→   548→   548→   548→                      ))}
+    49→   549→   549→   549→                    </SelectContent>
+    50→   550→   550→   550→                  </Select>
+    51→   551→   551→   551→                  <div className="flex gap-1.5">
+    52→   552→   552→   552→                    <Button size="sm" className="flex-1 bg-emerald-600 hover:bg-emerald-700 gap-1 h-8 text-xs" onClick={handleStart} disabled={starting || !selectedBatchId || verifyStatus?.isRunning}>
+    53→   553→   553→   553→                      {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+    54→   554→   554→   554→                      {starting ? 'Starting...' : 'Start'}
+    55→   555→   555→   555→                    </Button>
+    56→   556→   556→   556→                    <Button size="sm" variant="destructive" className="flex-1 gap-1 h-8 text-xs" onClick={handleStop} disabled={stopping || !verifyStatus?.isRunning}>
+    57→   557→   557→   557→                      {stopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5" />}
+    58→   558→   558→   558→                      Stop
+    59→   559→   559→   559→                    </Button>
+    60→   560→   560→   560→                    {selectedBatchId && (
+    61→   561→   561→   561→                      <Button size="sm" variant="outline" className="h-8 w-8 p-0" onClick={() => handleDownload(selectedBatchId)}>
+    62→   562→   562→   562→                        <Download className="w-3.5 h-3.5" />
+    63→   563→   563→   563→                      </Button>
+    64→   564→   564→   564→                    )}
+    65→   565→   565→   565→                  </div>
+    66→   566→   566→   566→                  {/* Reverify errors button */}
+    67→   567→   567→   567→                  {errorCount > 0 && (
+    68→   568→   568→   568→                    <Button size="sm" variant="outline" className="w-full gap-1 h-8 text-xs border-orange-300 text-orange-700 hover:bg-orange-50" onClick={handleReverify} disabled={reverifying || verifyStatus?.isRunning}>
+    69→   569→   569→   569→                      {reverifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+    70→   570→   570→   570→                      Reverify Errors ({errorCount.toLocaleString()})
+    71→   571→   571→   571→                    </Button>
+    72→   572→   572→   572→                  )}
+    73→   573→   573→   573→                </CardContent>
+    74→   574→   574→   574→              </Card>
+    75→   575→   575→   575→
+    76→   576→   576→   576→              {/* Progress */}
+    77→   577→   577→   577→              <Card>
+    78→   578→   578→   578→                <CardHeader className="pb-2 pt-3 px-4">
+    79→   579→   579→   579→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+    80→   580→   580→   580→                    <Activity className="w-3.5 h-3.5" /> Progress
+    81→   581→   581→   581→                  </CardTitle>
+    82→   582→   582→   582→                </CardHeader>
+    83→   583→   583→   583→                <CardContent className="px-4 pb-3">
+    84→   584→   584→   584→                  <div className="mb-2">
+    85→   585→   585→   585→                    <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+    86→   586→   586→   586→                      <span>{totalProcessed.toLocaleString()} / {totalEmails.toLocaleString()}</span>
+    87→   587→   587→   587→                      <span>{progressPct}%</span>
+    88→   588→   588→   588→                    </div>
+    89→   589→   589→   589→                    <Progress value={progressPct} className="h-2" />
+    90→   590→   590→   590→                  </div>
+    91→   591→   591→   591→                  <div className="text-[10px] text-slate-500 text-center">
+    92→   592→   592→   592→                    {(verifyStatus?.keys?.usedToday || 0).toLocaleString()} API calls today · {(verifyStatus?.totalPending || 0).toLocaleString()} pending across all batches
+    93→   593→   593→   593→                  </div>
+    94→   594→   594→   594→                </CardContent>
+    95→   595→   595→   595→              </Card>
+    96→   596→   596→   596→            </div>
+    97→   597→   597→   597→
+    98→   598→   598→   598→            {/* Status Breakdown */}
+    99→   599→   599→   599→            {bd && (
+   100→   600→   600→   600→              <Card>
+   101→   601→   601→   601→                <CardHeader className="pb-2 pt-3 px-4">
+   102→   602→   602→   602→                  <CardTitle className="text-xs font-semibold">Status Breakdown</CardTitle>
+   103→   603→   603→   603→                </CardHeader>
+   104→   604→   604→   604→                <CardContent className="px-4 pb-3">
+   105→   605→   605→   605→                  <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
+   106→   606→   606→   606→                    <div className="bg-emerald-50 rounded-lg p-2.5 text-center">
+   107→   607→   607→   607→                      <div className="text-lg font-bold text-emerald-700">{(bd.valid || 0).toLocaleString()}</div>
+   108→   608→   608→   608→                      <div className="text-[10px] font-medium text-emerald-600">Valid</div>
+   109→   609→   609→   609→                    </div>
+   110→   610→   610→   610→                    <div className="bg-red-50 rounded-lg p-2.5 text-center">
+   111→   611→   611→   611→                      <div className="text-lg font-bold text-red-700">{(bd.invalid || 0).toLocaleString()}</div>
+   112→   612→   612→   612→                      <div className="text-[10px] font-medium text-red-600">Invalid</div>
+   113→   613→   613→   613→                    </div>
+   114→   614→   614→   614→                    <div className="bg-orange-50 rounded-lg p-2.5 text-center">
+   115→   615→   615→   615→                      <div className="text-lg font-bold text-orange-700">{(bd['catch-all'] || 0).toLocaleString()}</div>
+   116→   616→   616→   616→                      <div className="text-[10px] font-medium text-orange-600">Catch-All</div>
+   117→   617→   617→   617→                    </div>
+   118→   618→   618→   618→                    <div className="bg-purple-50 rounded-lg p-2.5 text-center">
+   119→   619→   619→   619→                      <div className="text-lg font-bold text-purple-700">{(bd['no-mx'] || 0).toLocaleString()}</div>
+   120→   620→   620→   620→                      <div className="text-[10px] font-medium text-purple-600">No MX</div>
+   121→   621→   621→   621→                    </div>
+   122→   622→   622→   622→                    <div className="bg-amber-50 rounded-lg p-2.5 text-center">
+   123→   623→   623→   623→                      <div className="text-lg font-bold text-amber-700">{(bd.unverifiable || 0).toLocaleString()}</div>
+   124→   624→   624→   624→                      <div className="text-[10px] font-medium text-amber-600">Unverifiable</div>
+   125→   625→   625→   625→                    </div>
+   126→   626→   626→   626→                    <div className="bg-gray-50 rounded-lg p-2.5 text-center">
+   127→   627→   627→   627→                      <div className="text-lg font-bold text-gray-600">{(bd.skipped || 0).toLocaleString()}</div>
+   128→   628→   628→   628→                      <div className="text-[10px] font-medium text-gray-500">Skipped</div>
+   129→   629→   629→   629→                    </div>
+   130→   630→   630→   630→                    <div className="bg-red-50 rounded-lg p-2.5 text-center border border-red-200">
+   131→   631→   631→   631→                      <div className="text-lg font-bold text-red-600">{(bd.error || 0).toLocaleString()}</div>
+   132→   632→   632→   632→                      <div className="text-[10px] font-medium text-red-500">Error</div>
+   133→   633→   633→   633→                    </div>
+   134→   634→   634→   634→                    <div className="bg-blue-50 rounded-lg p-2.5 text-center">
+   135→   635→   635→   635→                      <div className="text-lg font-bold text-blue-600">{(bd.verifying || 0).toLocaleString()}</div>
+   136→   636→   636→   636→                      <div className="text-[10px] font-medium text-blue-500">Verifying</div>
+   137→   637→   637→   637→                    </div>
+   138→   638→   638→   638→                    <div className="bg-slate-50 rounded-lg p-2.5 text-center">
+   139→   639→   639→   639→                      <div className="text-lg font-bold text-slate-500">{(bd.pending || 0).toLocaleString()}</div>
+   140→   640→   640→   640→                      <div className="text-[10px] font-medium text-slate-400">Pending</div>
+   141→   641→   641→   641→                    </div>
+   142→   642→   642→   642→                  </div>
+   143→   643→   643→   643→                </CardContent>
+   144→   644→   644→   644→              </Card>
+   145→   645→   645→   645→            )}
+   146→   646→   646→   646→
+   147→   647→   647→   647→            {/* Batch list */}
+   148→   648→   648→   648→            {batches.length > 0 && (
+   149→   649→   649→   649→              <Card>
+   150→   650→   650→   650→                <CardHeader className="pb-2 pt-3 px-4">
+   151→   651→   651→   651→                  <CardTitle className="text-xs font-semibold">Batches</CardTitle>
+   152→   652→   652→   652→                </CardHeader>
+   153→   653→   653→   653→                <CardContent className="px-4 pb-3">
+   154→   654→   654→   654→                  <div className="space-y-1.5 max-h-60 overflow-y-auto">
+   155→   655→   655→   655→                    {batches.map(b => (
+   156→   656→   656→   656→                      <div key={b.id} className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-colors ${selectedBatchId === b.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`} onClick={() => setSelectedBatchId(b.id)}>
+   157→   657→   657→   657→                        <div className="flex-1 min-w-0">
+   158→   658→   658→   658→                          <div className="font-medium truncate">{b.name}</div>
+   159→   659→   659→   659→                          <div className="text-slate-400">{b._count?.contacts || b.totalContacts} contacts · {b.totalEmails} emails · Col {COL_LETTERS[b.currentColumn - 1]}</div>
+   160→   660→   660→   660→                        </div>
+   161→   661→   661→   661→                        <div className="flex items-center gap-1.5 ml-2">
+   162→   662→   662→   662→                          <Badge variant="outline" className={b.status === 'completed' ? 'bg-emerald-50 text-emerald-700 text-[10px]' : b.status === 'verifying' ? 'bg-blue-50 text-blue-700 text-[10px]' : b.status === 'paused' ? 'bg-amber-50 text-amber-700 text-[10px]' : 'bg-slate-50 text-slate-600 text-[10px]'}>
+   163→   663→   663→   663→                            {b.status}
+   164→   664→   664→   664→                          </Badge>
+   165→   665→   665→   665→                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={(e) => { e.stopPropagation(); handleDeleteBatch(b.id); }}>
+   166→   666→   666→   666→                            <Trash2 className="w-3 h-3 text-slate-400" />
+   167→   667→   667→   667→                          </Button>
+   168→   668→   668→   668→                        </div>
+   169→   669→   669→   669→                      </div>
+   170→   670→   670→   670→                    ))}
+   171→   671→   671→   671→                  </div>
+   172→   672→   672→   672→                </CardContent>
+   173→   673→   673→   673→              </Card>
+   174→   674→   674→   674→            )}
+   175→   675→   675→   675→          </TabsContent>
+   176→   676→   676→   676→
+   177→   677→   677→   677→          {/* ===== Spreadsheet ===== */}
+   178→   678→   678→   678→          <TabsContent value="spreadsheet" className="mt-3">
+   179→   679→   679→   679→            <Card>
+   180→   680→   680→   680→              <CardHeader className="pb-2 pt-3 px-4">
+   181→   681→   681→   681→                <div className="flex items-center justify-between">
+   182→   682→   682→   682→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   183→   683→   683→   683→                    <FileSpreadsheet className="w-3.5 h-3.5" /> Spreadsheet
+   184→   684→   684→   684→                  </CardTitle>
+   185→   685→   685→   685→                  <div className="flex items-center gap-1.5">
+   186→   686→   686→   686→                    {errorCount > 0 && selectedBatchId && (
+   187→   687→   687→   687→                      <Button variant="outline" size="sm" className="h-7 text-[11px] gap-1 border-orange-300 text-orange-700" onClick={handleReverify} disabled={reverifying || verifyStatus?.isRunning}>
+   188→   688→   688→   688→                        <RotateCcw className="w-3 h-3" /> Reverify Errors
+   189→   689→   689→   689→                      </Button>
+   190→   690→   690→   690→                    )}
+   191→   691→   691→   691→                    {selectedBatchId && (
+   192→   692→   692→   692→                      <Button variant="outline" size="sm" className="h-7 text-[11px] gap-1" onClick={() => handleDownload(selectedBatchId)}>
+   193→   693→   693→   693→                        <Download className="w-3 h-3" /> Export CSV
+   194→   694→   694→   694→                      </Button>
+   195→   695→   695→   695→                    )}
+   196→   696→   696→   696→                    <Button variant="outline" size="sm" className="h-7 text-[11px] gap-1" onClick={loadContacts}>
+   197→   697→   697→   697→                      <RefreshCw className="w-3 h-3" /> Refresh
+   198→   698→   698→   698→                    </Button>
+   199→   699→   699→   699→                  </div>
+   200→   700→   700→   700→                </div>
+   201→   701→   701→   701→              </CardHeader>
+   202→   702→   702→   702→              <CardContent className="px-2 pb-3">
+   203→   703→   703→   703→                {!selectedBatchId ? (
+   204→   704→   704→   704→                  <div className="text-center py-10 text-slate-400">
+   205→   705→   705→   705→                    <FileSpreadsheet className="w-10 h-10 mx-auto mb-2 opacity-30" />
+   206→   706→   706→   706→                    <p className="text-xs">Upload a CSV to see the spreadsheet</p>
+   207→   707→   707→   707→                  </div>
+   208→   708→   708→   708→                ) : (
+   209→   709→   709→   709→                  <>
+   210→   710→   710→   710→                    <div className="overflow-x-auto border rounded-lg">
+   211→   711→   711→   711→                      <Table>
+   212→   712→   712→   712→                        <TableHeader>
+   213→   713→   713→   713→                          <TableRow className="bg-slate-50 hover:bg-slate-50">
+   214→   714→   714→   714→                            <TableHead className="text-[10px] font-semibold min-w-[70px] sticky left-0 bg-slate-50 z-10">A: First</TableHead>
+   215→   715→   715→   715→                            <TableHead className="text-[10px] font-semibold min-w-[70px]">B: Last</TableHead>
+   216→   716→   716→   716→                            <TableHead className="text-[10px] font-semibold min-w-[80px]">C: Title</TableHead>
+   217→   717→   717→   717→                            <TableHead className="text-[10px] font-semibold min-w-[80px]">D: Company</TableHead>
+   218→   718→   718→   718→                            <TableHead className="text-[10px] font-semibold min-w-[100px]">E: Domain</TableHead>
+   219→   719→   719→   719→                            <TableHead className="text-[10px] font-semibold min-w-[50px]">F: HC</TableHead>
+   220→   720→   720→   720→                            <TableHead className="text-[10px] font-semibold min-w-[70px]">G: Industry</TableHead>
+   221→   721→   721→   721→                            <TableHead className="text-[10px] font-semibold min-w-[70px]">H: Location</TableHead>
+   222→   722→   722→   722→                            {EMAIL_LABELS.map((label, i) => (
+   223→   723→   723→   723→                              <React.Fragment key={i}>
+   224→   724→   724→   724→                                <TableHead className={`text-[10px] font-semibold min-w-[160px] ${verifyStatus?.currentColumn === i + 1 && verifyStatus?.isRunning ? 'bg-emerald-50' : ''}`}>
+   225→   725→   725→   725→                                  {COL_LETTERS[i]}: {label}
+   226→   726→   726→   726→                                </TableHead>
+   227→   727→   727→   727→                                <TableHead className={`text-[10px] font-semibold min-w-[90px] ${verifyStatus?.currentColumn === i + 1 && verifyStatus?.isRunning ? 'bg-emerald-50' : ''}`}>
+   228→   728→   728→   728→                                  {STATUS_LETTERS[i]}: Status
+   229→   729→   729→   729→                                </TableHead>
+   230→   730→   730→   730→                              </React.Fragment>
+   231→   731→   731→   731→                            ))}
+   232→   732→   732→   732→                          </TableRow>
+   233→   733→   733→   733→                        </TableHeader>
+   234→   734→   734→   734→                        <TableBody>
+   235→   735→   735→   735→                          {contacts.length === 0 ? (
+   236→   736→   736→   736→                            <TableRow>
+   237→   737→   737→   737→                              <TableCell colSpan={20} className="text-center py-6 text-slate-400 text-xs">No contacts</TableCell>
+   238→   738→   738→   738→                            </TableRow>
+   239→   739→   739→   739→                          ) : (
+   240→   740→   740→   740→                            contacts.map(c => (
+   241→   741→   741→   741→                              <TableRow key={c.id} className="text-[11px] hover:bg-slate-50/50">
+   242→   742→   742→   742→                                <TableCell className="font-medium py-1.5 sticky left-0 bg-white z-10">{c.firstName}</TableCell>
+   243→   743→   743→   743→                                <TableCell className="font-medium py-1.5">{c.lastName}</TableCell>
+   244→   744→   744→   744→                                <TableCell className="text-slate-500 py-1.5">{c.jobTitle || '-'}</TableCell>
+   245→   745→   745→   745→                                <TableCell className="text-slate-500 py-1.5">{c.company || '-'}</TableCell>
+   246→   746→   746→   746→                                <TableCell className="text-blue-600 font-mono text-[10px] py-1.5">{c.domain}</TableCell>
+   247→   747→   747→   747→                                <TableCell className="py-1.5">{c.headCount || '-'}</TableCell>
+   248→   748→   748→   748→                                <TableCell className="py-1.5">{c.industry || '-'}</TableCell>
+   249→   749→   749→   749→                                <TableCell className="py-1.5">{c.location || '-'}</TableCell>
+   250→   750→   750→   750→                                {([c.email1, c.email2, c.email3, c.email4, c.email5, c.email6] as (string | null)[]).map((email, i) => {
+   251→   751→   751→   751→                                  const status = ([c.status1, c.status2, c.status3, c.status4, c.status5, c.status6] as string[])[i];
+   252→   752→   752→   752→                                  return (
+   253→   753→   753→   753→                                    <React.Fragment key={i}>
+   254→   754→   754→   754→                                      <TableCell className={`font-mono text-[10px] py-1.5 ${verifyStatus?.currentColumn === i + 1 && verifyStatus?.isRunning && status === 'pending' ? 'bg-emerald-50/50' : ''}`}>
+   255→   755→   755→   755→                                        {email || '-'}
+   256→   756→   756→   756→                                      </TableCell>
+   257→   757→   757→   757→                                      <TableCell className="py-1.5"><StatusBadge status={status} /></TableCell>
+   258→   758→   758→   758→                                    </React.Fragment>
+   259→   759→   759→   759→                                  );
+   260→   760→   760→   760→                                })}
+   261→   761→   761→   761→                              </TableRow>
+   262→   762→   762→   762→                            ))
+   263→   763→   763→   763→                          )}
+   264→   764→   764→   764→                        </TableBody>
+   265→   765→   765→   765→                      </Table>
+   266→   766→   766→   766→                    </div>
+   267→   767→   767→   767→                    <div className="flex items-center justify-between mt-2">
+   268→   768→   768→   768→                      <p className="text-[10px] text-slate-400">{contacts.length} of {contactsTotal.toLocaleString()} contacts</p>
+   269→   769→   769→   769→                      <div className="flex gap-1">
+   270→   770→   770→   770→                        <Button variant="outline" size="sm" disabled={contactsPage <= 1} onClick={() => setContactsPage(p => p - 1)} className="h-6 text-[10px]">Prev</Button>
+   271→   771→   771→   771→                        <span className="text-[10px] text-slate-400 self-center px-1">{contactsPage}/{Math.max(1, Math.ceil(contactsTotal / 50))}</span>
+   272→   772→   772→   772→                        <Button variant="outline" size="sm" disabled={contactsPage >= Math.ceil(contactsTotal / 50)} onClick={() => setContactsPage(p => p + 1)} className="h-6 text-[10px]">Next</Button>
+   273→   773→   773→   773→                      </div>
+   274→   774→   774→   774→                    </div>
+   275→   775→   775→   775→                  </>
+   276→   776→   776→   776→                )}
+   277→   777→   777→   777→              </CardContent>
+   278→   778→   778→   778→            </Card>
+   279→   779→   779→   779→          </TabsContent>
+   280→   780→   780→   780→
+   281→   781→   781→   781→          {/* ===== API Keys ===== */}
+   282→   782→   782→   782→          <TabsContent value="keys" className="mt-3 space-y-3">
+   283→   783→   783→   783→            <Card>
+   284→   784→   784→   784→              <CardHeader className="pb-2 pt-3 px-4">
+   285→   785→   785→   785→                <div className="flex items-center justify-between">
+   286→   786→   786→   786→                  <CardTitle className="text-xs font-semibold flex items-center gap-1.5">
+   287→   787→   787→   787→                    <Key className="w-3.5 h-3.5" /> API Keys
+   288→   788→   788→   788→                  </CardTitle>
+   289→   789→   789→   789→                  <Dialog open={addKeyOpen} onOpenChange={(open) => { setAddKeyOpen(open); if (!open) setKeyTestResult(null); }}>
+   290→   790→   790→   790→                    <DialogTrigger asChild>
+   291→   791→   791→   791→                      <Button size="sm" className="gap-1 h-7 text-[11px] bg-emerald-600 hover:bg-emerald-700">
+   292→   792→   792→   792→                        <Plus className="w-3 h-3" /> Add Key
+   293→   793→   793→   793→                      </Button>
+   294→   794→   794→   794→                    </DialogTrigger>
+   295→   795→   795→   795→                    <DialogContent>
+   296→   796→   796→   796→                      <DialogHeader>
+   297→   797→   797→   797→                        <DialogTitle className="text-sm">Add MailTester Ninja API Key</DialogTitle>
+   298→   798→   798→   798→                      </DialogHeader>
+   299→   799→   799→   799→                      <div className="space-y-3 py-3">
+   300→   800→   800→   800→                        <div>
+   301→   801→   801→   801→                          <Label className="text-xs">API Key</Label>
+   302→   802→   802→   802→                          <div className="flex gap-2">
+   303→   803→   803→   803→                            <Input placeholder="Paste your MailTester Ninja key" value={newKey} onChange={e => { setNewKey(e.target.value); setKeyTestResult(null); }} className="h-8 text-xs flex-1" />
+   304→   804→   804→   804→                            <Button variant="outline" size="sm" className="h-8 text-xs gap-1 shrink-0" onClick={handleTestKey} disabled={testingKey || !newKey.trim()}>
+   305→   805→   805→   805→                              {testingKey ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />}
+   306→   806→   806→   806→                              {testingKey ? 'Testing...' : 'Test'}
+   307→   807→   807→   807→                            </Button>
+   308→   808→   808→   808→                          </div>
+   309→   809→   809→   809→                          {keyTestResult && (
+   310→   810→   810→   810→                            <div className={`mt-1.5 p-2 rounded text-[11px] ${keyTestResult.valid ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+   311→   811→   811→   811→                              {keyTestResult.valid ? <CheckCircle className="w-3 h-3 inline mr-1" /> : <XCircle className="w-3 h-3 inline mr-1" />}
+   312→   812→   812→   812→                              {keyTestResult.message}
+   313→   813→   813→   813→                            </div>
+   314→   814→   814→   814→                          )}
+   315→   815→   815→   815→                        </div>
+   316→   816→   816→   816→                        <div>
+   317→   817→   817→   817→                          <Label className="text-xs">Label (optional)</Label>
+   318→   818→   818→   818→                          <Input placeholder="e.g., Pro Plan Key 1" value={newKeyLabel} onChange={e => setNewKeyLabel(e.target.value)} className="h-8 text-xs" />
+   319→   819→   819→   819→                        </div>
+   320→   820→   820→   820→                        <div className="grid grid-cols-2 gap-3">
+   321→   821→   821→   821→                          <div>
+   322→   822→   822→   822→                            <Label className="text-xs">Speed (ms gap)</Label>
+   323→   823→   823→   823→                            <Input type="number" value={newKeySpeed} onChange={e => setNewKeySpeed(parseInt(e.target.value) || 900)} className="h-8 text-xs" />
+   324→   824→   824→   824→                            <p className="text-[10px] text-slate-400 mt-0.5">Pro: 900ms · Ultimate: 170ms</p>
+   325→   825→   825→   825→                          </div>
+   326→   826→   826→   826→                          <div>
+   327→   827→   827→   827→                            <Label className="text-xs">Daily Limit</Label>
+   328→   828→   828→   828→                            <Input type="number" value={newKeyLimit} onChange={e => setNewKeyLimit(parseInt(e.target.value) || 86000)} className="h-8 text-xs" />
+   329→   829→   829→   829→                            <p className="text-[10px] text-slate-400 mt-0.5">Pro: 86,000 · Ultimate: 500,000</p>
+   330→   830→   830→   830→                          </div>
+   331→   831→   831→   831→                        </div>
+   332→   832→   832→   832→                        <Button className="w-full bg-emerald-600 hover:bg-emerald-700 text-xs" onClick={handleAddKey} disabled={!newKey.trim()}>
+   333→   833→   833→   833→                          Add Key
+   334→   834→   834→   834→                        </Button>
+   335→   835→   835→   835→                      </div>
+   336→   836→   836→   836→                    </DialogContent>
+   337→   837→   837→   837→                  </Dialog>
+   338→   838→   838→   838→                </div>
+   339→   839→   839→   839→              </CardHeader>
+   340→   840→   840→   840→              <CardContent className="px-4 pb-3">
+   341→   841→   841→   841→                {apiKeys.length === 0 ? (
+   342→   842→   842→   842→                  <div className="text-center py-6 text-slate-400">
+   343→   843→   843→   843→                    <Key className="w-8 h-8 mx-auto mb-2 opacity-30" />
+   344→   844→   844→   844→                    <p className="text-xs">No API keys yet</p>
+   345→   845→   845→   845→                    <p className="text-[10px] mt-0.5">Add your MailTester Ninja key to start verifying</p>
+   346→   846→   846→   846→                  </div>
+   347→   847→   847→   847→                ) : (
+   348→   848→   848→   848→                  <div className="space-y-2">
+   349→   849→   849→   849→                    {apiKeys.map(k => (
+   350→   850→   850→   850→                      <div key={k.id} className="flex items-center justify-between p-2.5 rounded-lg border bg-white">
+   351→   851→   851→   851→                        <div className="flex items-center gap-2.5">
+   352→   852→   852→   852→                          <Switch checked={k.active} onCheckedChange={(checked) => handleToggleKey(k.id, checked)} />
+   353→   853→   853→   853→                          <div>
+   354→   854→   854→   854→                            <div className="font-mono text-xs">{k.key}</div>
+   355→   855→   855→   855→                            <div className="text-[10px] text-slate-400">{k.label || 'No label'} · {k.speedMs}ms gap · {k.dailyLimit.toLocaleString()}/day</div>
+   356→   856→   856→   856→                          </div>
+   357→   857→   857→   857→                        </div>
+   358→   858→   858→   858→                        <div className="flex items-center gap-2">
+   359→   859→   859→   859→                          <div className="flex items-center gap-1">
+   360→   860→   860→   860→                            <Label className="text-[10px] text-slate-400">Speed:</Label>
+   361→   861→   861→   861→                            <Input type="number" value={k.speedMs} onChange={e => handleUpdateKeySpeed(k.id, parseInt(e.target.value) || 900)} className="h-6 w-16 text-[10px] px-1" min={100} max={5000} step={50} />
+   362→   862→   862→   862→                            <span className="text-[10px] text-slate-400">ms</span>
+   363→   863→   863→   863→                          </div>
+   364→   864→   864→   864→                          <Badge variant="outline" className="text-[10px]">{k.usedToday.toLocaleString()} today</Badge>
+   365→   865→   865→   865→                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => handleDeleteKey(k.id)}>
+   366→   866→   866→   866→                            <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+   367→   867→   867→   867→                          </Button>
+   368→   868→   868→   868→                        </div>
+   369→   869→   869→   869→                      </div>
+   370→   870→   870→   870→                    ))}
+   371→   871→   871→   871→                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mt-2">
+   372→   872→   872→   872→                      <div className="text-[11px] font-medium text-blue-800">Parallel speed with {apiKeys.filter(k => k.active).length} key{apiKeys.filter(k => k.active).length !== 1 ? 's' : ''}</div>
+   373→   873→   873→   873→                      <div className="text-[10px] text-blue-700 mt-0.5">
+   374→   874→   874→   874→                        Each key runs independently. <strong>{effectivePerDay.toLocaleString()}</strong> emails/day ({effectivePerSecond.toFixed(1)}/sec).
+   375→   875→   875→   875→                        Adding more keys multiplies your speed.
+   376→   876→   876→   876→                      </div>
+   377→   877→   877→   877→                    </div>
+   378→   878→   878→   878→                  </div>
+   379→   879→   879→   879→                )}
+   380→   880→   880→   880→              </CardContent>
+   381→   881→   881→   881→            </Card>
+   382→   882→   882→   882→          </TabsContent>
+   383→   883→   883→   883→        </Tabs>
+   384→   884→   884→   884→      </main>
+   385→   885→   885→   885→
+   386→   886→   886→   886→      {/* Footer */}
+   387→   887→   887→   887→      <footer className="mt-auto border-t bg-white py-2 text-center">
+   388→   888→   888→   888→        <p className="text-[10px] text-slate-400">MailTester Ninja Engine · Continuous parallel verification · Auto-resumes after restart</p>
+   389→   889→   889→   889→      </footer>
+   390→   890→   890→   890→    </div>
+   391→   891→   891→   891→  );
+   392→   892→   892→   892→}
+   393→   893→   893→   893→
